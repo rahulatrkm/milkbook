@@ -186,6 +186,20 @@
 
   @media (prefers-reduced-motion: reduce){ *{transition-duration:.01ms!important} }
 </style>
+
+<meta property="og:url" content="https://rahulatrkm.github.io/milkbook/" />
+<meta property="og:image" content="https://rahulatrkm.github.io/milkbook/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Milkbook — daily milk delivery tracker" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Milkbook — daily milk delivery tracker" />
+<meta name="twitter:description" content="Track daily milk delivery in one tap. Mark delivered, skipped or away, get an exact monthly bill, sync across your family's phones and subscribe from your calendar." />
+<meta name="twitter:image" content="https://rahulatrkm.github.io/milkbook/og.png" />
+<style>/* baseline: keyboard focus and motion preference */
+:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
 </head>
 <body>
 <header>
@@ -380,7 +394,8 @@
    on different phones both keep their edits.
    ========================================================================= */
 
-const API = "https://milkbook.onrender.com";
+// Must match the deployed Render service; the app stays fully usable if it is down.
+const API = "https://milkbook-a0ru.onrender.com";
 const $ = id => document.getElementById(id);
 const pad2 = n => String(n).padStart(2, "0");
 
@@ -833,7 +848,17 @@ function newCode(){
   const s = [...a].map(x => CODE_ALPHABET[x % CODE_ALPHABET.length]).join("");
   return s.slice(0, 4) + "-" + s.slice(4, 8) + "-" + s.slice(8, 12);
 }
-const normCode = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+
+/* O/0 and I/1 are left out of the alphabet precisely because they get
+   misread off a screen, so say which character is wrong rather than
+   letting the server reject the whole code with no explanation. */
+function parseCode(input){
+  const raw = (input || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if(raw.length !== 12) return { error: `A code has 12 letters and numbers \u2014 that has ${raw.length}.` };
+  const bad = [...new Set([...raw].filter(c => !CODE_ALPHABET.includes(c)))];
+  if(bad.length) return { error: `Codes never contain ${bad.join(" or ")}. Check O against 0, and I against 1.` };
+  return { code: raw.slice(0, 4) + "-" + raw.slice(4, 8) + "-" + raw.slice(8, 12) };
+}
 
 let syncTimer = 0, syncing = false;
 function queueSync(){
@@ -872,9 +897,9 @@ $("sCreate").addEventListener("click", () => {
   store.sync = newCode(); saveStore(store); renderSync(); doSync(false); toast("Sync on");
 });
 $("sJoinBtn").addEventListener("click", () => {
-  const c = normCode($("sJoin").value);
-  if(c.length !== 12) return toast("That code doesn't look right");
-  store.sync = c.slice(0, 4) + "-" + c.slice(4, 8) + "-" + c.slice(8, 12);
+  const parsed = parseCode($("sJoin").value);
+  if(parsed.error) return toast(parsed.error);
+  store.sync = parsed.code;
   saveStore(store); renderSync(); doSync(false);
 });
 $("sNow").addEventListener("click", () => doSync(false));
