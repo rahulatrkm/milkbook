@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Milkbook — daily milk delivery tracker</title>
+<meta name="description" content="Track daily milk delivery in one tap. Mark delivered, skipped or away, get an exact monthly bill, sync across your family's phones and subscribe from your phone calendar. Free, no signup." />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0b0c0f" media="(prefers-color-scheme: dark)" />
+<meta name="color-scheme" content="light dark" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Milkbook" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="canonical" href="https://rahulatrkm.github.io/milkbook/" />
+<meta property="og:title" content="Milkbook — daily milk delivery tracker" />
+<meta property="og:description" content="One tap a day. Exact monthly bill. Syncs across the family. Works offline." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%234338ca'/><path d='M12 6h8v3l2 5v10a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V14l2-5z' fill='%23fff'/></svg>" />
+<style>
+  :root{
+    --bg:#f7f8fa; --surface:#ffffff; --raised:#f1f3f7;
+    --text:#111318; --text-2:#4a5164; --text-3:#7b8398;
+    --line:#e3e6ed; --line-2:#cdd2de;
+    --accent:#4338ca; --accent-soft:#eef0fe;
+    --good:#047857; --good-soft:#e7f5f0;
+    --warn:#b45309; --warn-soft:#fdf3e7;
+    --bad:#b91c1c;
+    --radius:12px; --shadow:0 1px 2px rgba(16,20,35,.06), 0 8px 24px -14px rgba(16,20,35,.28);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0b0c0f; --surface:#14161c; --raised:#1c1f27;
+      --text:#eef0f5; --text-2:#a8b0c2; --text-3:#767e92;
+      --line:#242833; --line-2:#333949;
+      --accent:#a5b4fc; --accent-soft:#1e2138;
+      --good:#34d399; --good-soft:#12241f;
+      --warn:#fbbf24; --warn-soft:#251d10;
+      --bad:#f87171;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -14px rgba(0,0,0,.7);
+    }
+  }
+  *,*::before,*::after{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text); min-height:100dvh;
+    font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; font-size:15px; line-height:1.5;
+    display:flex; flex-direction:column; align-items:center;
+  }
+  .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum"}
+  button{font:inherit; color:inherit; border:0; background:none; cursor:pointer}
+
+  .wrap{width:100%; max-width:520px; padding:0 16px calc(96px + env(safe-area-inset-bottom))}
+
+  header{
+    width:100%; max-width:520px; padding:max(14px,env(safe-area-inset-top)) 16px 10px;
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+  }
+  .brand{display:flex; align-items:center; gap:9px; font-weight:650; letter-spacing:-.01em}
+  .brand svg{width:22px; height:22px; flex:none}
+  .iconbtn{width:36px; height:36px; border-radius:10px; display:grid; place-items:center;
+    color:var(--text-2); transition:background .15s, color .15s}
+  .iconbtn:hover{background:var(--raised); color:var(--text)}
+  .iconbtn svg{width:19px; height:19px}
+
+  /* ---------- summary ---------- */
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow)}
+  .summary{padding:16px 18px; display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:12px}
+  .amount{font-size:29px; font-weight:600; letter-spacing:-.025em; line-height:1.1}
+  .amount small{font-size:14px; font-weight:500; color:var(--text-3); letter-spacing:0}
+  .amountsub{font-size:12.5px; color:var(--text-3); margin-top:3px}
+  .monthnav{display:flex; align-items:center; gap:2px}
+  .monthnav b{font-size:13.5px; font-weight:600; min-width:88px; text-align:center}
+  .navbtn{width:30px; height:30px; border-radius:8px; display:grid; place-items:center; color:var(--text-2)}
+  .navbtn:hover{background:var(--raised)}
+  .navbtn[disabled]{opacity:.3; cursor:default}
+  .navbtn svg{width:16px; height:16px}
+
+  /* ---------- calendar ---------- */
+  .cal{padding:12px 12px 14px; margin-bottom:12px}
+  .dow{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-bottom:6px}
+  .dow span{text-align:center; font-size:10.5px; font-weight:600; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--text-3)}
+  .grid{display:grid; grid-template-columns:repeat(7,1fr); gap:4px}
+  .day{
+    aspect-ratio:1/1; border-radius:10px; position:relative;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    background:var(--raised); border:1px solid transparent;
+    transition:transform .12s cubic-bezier(.22,1,.36,1), background .15s, border-color .15s;
+  }
+  .day:active{transform:scale(.93)}
+  .day.blank{background:none; pointer-events:none}
+  .day .n{font-size:12.5px; font-weight:550; color:var(--text-2); line-height:1}
+  .day .m{width:15px; height:15px; display:grid; place-items:center}
+  .day .m svg{width:100%; height:100%}
+  .day.yes{background:var(--good-soft)} .day.yes .n{color:var(--good)}
+  .day.skip{background:var(--warn-soft)} .day.skip .n{color:var(--warn)}
+  .day.away{background:var(--accent-soft)} .day.away .n{color:var(--accent)}
+  .day.off{background:transparent; border:1px dashed var(--line-2)}
+  .day.off .n{color:var(--text-3)}
+  .day.future{opacity:.38}
+  .day.pre{opacity:.28; pointer-events:none}
+  .day.today{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent)}
+  .day .q{position:absolute; bottom:3px; font-size:8.5px; font-weight:600; color:var(--text-3); line-height:1}
+
+  .legend{display:flex; flex-wrap:wrap; gap:12px; justify-content:center; margin-top:12px; padding-top:11px; border-top:1px solid var(--line)}
+  .legend i{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--text-3); font-style:normal}
+  .dot{width:9px; height:9px; border-radius:3px; flex:none}
+
+  /* ---------- rows ---------- */
+  .rows{overflow:hidden}
+  .row{display:flex; align-items:center; gap:12px; width:100%; padding:13px 16px; text-align:left;
+    border-bottom:1px solid var(--line); transition:background .14s}
+  .row:last-child{border-bottom:0}
+  .row:hover{background:var(--raised)}
+  .row svg{width:18px; height:18px; color:var(--text-3); flex:none}
+  .row .t{flex:1; min-width:0}
+  .row .t b{display:block; font-weight:550; font-size:14px}
+  .row .t span{display:block; font-size:12px; color:var(--text-3); margin-top:1px}
+  .row .chev{width:15px; height:15px; color:var(--line-2)}
+
+  /* ---------- sheets ---------- */
+  .scrim{position:fixed; inset:0; background:rgba(10,12,18,.5); backdrop-filter:blur(2px);
+    opacity:0; pointer-events:none; transition:opacity .28s ease; z-index:30}
+  .scrim.on{opacity:1; pointer-events:auto}
+  .sheet{
+    position:fixed; left:0; right:0; bottom:0; z-index:31; margin:0 auto; max-width:520px;
+    background:var(--surface); border-radius:18px 18px 0 0; border:1px solid var(--line); border-bottom:0;
+    padding:8px 18px calc(20px + env(safe-area-inset-bottom));
+    transform:translateY(102%); transition:transform .34s cubic-bezier(.22,1,.36,1);
+    max-height:88dvh; overflow-y:auto;
+  }
+  .sheet.on{transform:none}
+  .grab{width:34px; height:4px; border-radius:4px; background:var(--line-2); margin:6px auto 14px}
+  .sheet h2{font-size:17px; font-weight:650; letter-spacing:-.01em; margin-bottom:3px}
+  .sheet .lede{font-size:13px; color:var(--text-3); margin-bottom:16px}
+  .field{margin-bottom:13px}
+  .field label{display:block; font-size:12px; font-weight:600; color:var(--text-2); margin-bottom:5px}
+  .field input, .field select{
+    width:100%; padding:11px 12px; border:1px solid var(--line-2); border-radius:10px;
+    background:var(--bg); color:var(--text); font-size:15px; outline:none;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  .field input:focus, .field select:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  .hint{font-size:11.5px; color:var(--text-3); margin-top:5px; line-height:1.5}
+  .btn{
+    width:100%; padding:13px; border-radius:11px; font-weight:600; font-size:15px;
+    background:var(--accent); color:#fff; margin-top:6px;
+    transition:filter .15s, transform .12s;
+  }
+  @media (prefers-color-scheme: dark){ .btn{color:#0b0c0f} }
+  .btn:hover{filter:brightness(1.08)} .btn:active{transform:scale(.99)}
+  .btn.sec{background:var(--raised); color:var(--text); border:1px solid var(--line-2)}
+  .btn.danger{background:transparent; color:var(--bad); border:1px solid var(--line-2)}
+  .chips{display:flex; gap:6px; flex-wrap:wrap}
+  .chip{padding:7px 12px; border-radius:999px; border:1px solid var(--line-2); font-size:12.5px; font-weight:550;
+    color:var(--text-2); transition:.15s}
+  .chip.on{background:var(--accent); border-color:var(--accent); color:#fff}
+  @media (prefers-color-scheme: dark){ .chip.on{color:#0b0c0f} }
+
+  .billrow{display:flex; justify-content:space-between; align-items:baseline; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px}
+  .billrow:last-of-type{border-bottom:0}
+  .billrow span{color:var(--text-2)}
+  .billrow b{font-weight:600}
+  .billtotal{display:flex; justify-content:space-between; align-items:baseline; margin-top:12px; padding-top:13px; border-top:2px solid var(--line-2)}
+  .billtotal span{font-size:13px; color:var(--text-3); font-weight:600; letter-spacing:.04em; text-transform:uppercase}
+  .billtotal b{font-size:25px; font-weight:650; letter-spacing:-.02em}
+  .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:19px; font-weight:600;
+    letter-spacing:.14em; text-align:center; padding:14px; background:var(--raised);
+    border:1px dashed var(--line-2); border-radius:11px; user-select:all; word-break:break-all}
+
+  #toast{position:fixed; left:50%; bottom:calc(88px + env(safe-area-inset-bottom)); transform:translate(-50%,10px);
+    z-index:50; background:var(--text); color:var(--bg); padding:10px 18px; border-radius:999px;
+    font-size:13.5px; font-weight:550; opacity:0; transition:.26s cubic-bezier(.22,1,.36,1); pointer-events:none;
+    max-width:88vw; text-align:center}
+  #toast.on{opacity:1; transform:translate(-50%,0)}
+
+  .fab{position:fixed; left:50%; transform:translateX(-50%); bottom:calc(20px + env(safe-area-inset-bottom));
+    z-index:20; display:flex; gap:8px; background:var(--surface); border:1px solid var(--line);
+    box-shadow:var(--shadow); border-radius:999px; padding:6px}
+  .fab button{display:flex; align-items:center; gap:7px; padding:10px 16px; border-radius:999px;
+    font-size:13.5px; font-weight:600; color:var(--text-2); transition:.15s}
+  .fab button:hover{background:var(--raised); color:var(--text)}
+  .fab svg{width:16px; height:16px}
+
+  @media (prefers-reduced-motion: reduce){ *{transition-duration:.01ms!important} }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)">
+      <path d="M9 3h6v3l2 5v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9l2-5z"/><path d="M7.5 13h9"/>
+    </svg>
+    <span>Milkbook</span>
+  </div>
+  <button class="iconbtn" id="btnSettings" aria-label="Settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</header>
+
+<div class="wrap">
+  <div class="card summary">
+    <div>
+      <div class="amount num" id="sAmount">—</div>
+      <div class="amountsub" id="sSub">no deliveries yet</div>
+    </div>
+    <div class="monthnav">
+      <button class="navbtn" id="prevM" aria-label="Previous month">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <b id="mLabel">—</b>
+      <button class="navbtn" id="nextM" aria-label="Next month">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="card cal">
+    <div class="dow" id="dow"></div>
+    <div class="grid" id="grid"></div>
+    <div class="legend">
+      <i><span class="dot" style="background:var(--good)"></span>Delivered</i>
+      <i><span class="dot" style="background:var(--warn)"></span>Skipped</i>
+      <i><span class="dot" style="background:var(--accent)"></span>Away</i>
+      <i><span class="dot" style="border:1px dashed var(--line-2)"></span>Vendor off</i>
+    </div>
+  </div>
+
+  <div class="card rows">
+    <button class="row" id="btnBill">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+      <span class="t"><b>Monthly bill</b><span>Itemised total to send your vendor</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <button class="row" id="btnAway">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5a2.12 2.12 0 0 0-3-3L13 8 4.8 6.2a.5.5 0 0 0-.5.8l3.9 4.9-2 2H3.5a.5.5 0 0 0-.4.8l2 2.6 2.6 2a.5.5 0 0 0 .8-.4v-2.7l2-2 4.9 3.9a.5.5 0 0 0 .8-.5z"/></svg>
+      <span class="t"><b>Mark away</b><span>Pause delivery for a date range</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <button class="row" id="btnCal">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+      <span class="t"><b>Add to phone calendar</b><span>Bill reminders and away days, iOS or Android</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <button class="row" id="btnSync">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6M3 22v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L21 8M21 15a9 9 0 0 1-14.9 3.4L3 16"/></svg>
+      <span class="t"><b>Sync across phones</b><span id="syncSub">Share one code with your family</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+  </div>
+</div>
+
+<div class="fab">
+  <button id="fabToday">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+    <span id="fabTodayLbl">Today</span>
+  </button>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<!-- settings -->
+<div class="sheet" id="shSettings">
+  <div class="grab"></div>
+  <h2>Settings</h2>
+  <p class="lede">Used to work out your monthly bill.</p>
+  <div class="field"><label for="fVendor">Vendor name</label><input id="fVendor" type="text" placeholder="e.g. Ramesh Dairy" autocomplete="off" /></div>
+  <div class="two">
+    <div class="field"><label for="fQty">Litres per day</label><input id="fQty" type="number" inputmode="decimal" step="0.25" min="0" /></div>
+    <div class="field"><label for="fRate">Price per litre</label><input id="fRate" type="number" inputmode="decimal" step="0.5" min="0" /></div>
+  </div>
+  <div class="two">
+    <div class="field"><label for="fCur">Currency</label><select id="fCur"></select></div>
+    <div class="field"><label for="fStart">Tracking from</label><input id="fStart" type="date" /></div>
+  </div>
+  <div class="field">
+    <label>Vendor's weekly off</label>
+    <div class="chips" id="fOff"></div>
+    <p class="hint">Days your vendor never delivers. These are not counted or billed.</p>
+  </div>
+  <button class="btn" id="saveSettings">Save</button>
+  <button class="btn danger" id="btnReset" style="margin-top:8px">Erase all data</button>
+</div>
+
+<!-- day editor -->
+<div class="sheet" id="shDay">
+  <div class="grab"></div>
+  <h2 id="dTitle">—</h2>
+  <p class="lede">Tap a day on the calendar to cycle it. Use this for a different quantity.</p>
+  <div class="field">
+    <label>Status</label>
+    <div class="chips" id="dStates"></div>
+  </div>
+  <div class="field" id="dQtyWrap">
+    <label for="dQty">Litres this day</label>
+    <input id="dQty" type="number" inputmode="decimal" step="0.25" min="0" />
+    <p class="hint">Leave as your default unless it was different.</p>
+  </div>
+  <button class="btn" id="dSave">Save</button>
+</div>
+
+<!-- away range -->
+<div class="sheet" id="shAway">
+  <div class="grab"></div>
+  <h2>Mark away</h2>
+  <p class="lede">No delivery between these dates. Nothing is billed for them.</p>
+  <div class="two">
+    <div class="field"><label for="aFrom">From</label><input id="aFrom" type="date" /></div>
+    <div class="field"><label for="aTo">To</label><input id="aTo" type="date" /></div>
+  </div>
+  <button class="btn" id="aApply">Mark as away</button>
+  <button class="btn sec" id="aClear" style="margin-top:8px">Clear this range back to delivered</button>
+</div>
+
+<!-- bill -->
+<div class="sheet" id="shBill">
+  <div class="grab"></div>
+  <h2 id="bTitle">Bill</h2>
+  <p class="lede" id="bVendor"></p>
+  <div id="bRows"></div>
+  <div class="billtotal"><span>Total</span><b class="num" id="bTotal">—</b></div>
+  <button class="btn" id="bShare">Share bill</button>
+  <button class="btn sec" id="bCopy" style="margin-top:8px">Copy as text</button>
+</div>
+
+<!-- calendar -->
+<div class="sheet" id="shCal">
+  <div class="grab"></div>
+  <h2>Add to phone calendar</h2>
+  <p class="lede">Works with Apple Calendar, Google Calendar and anything else that reads .ics.</p>
+  <div class="field">
+    <label>What to include</label>
+    <div class="chips" id="cOpts"></div>
+  </div>
+  <button class="btn" id="cDownload">Download calendar file</button>
+  <p class="hint" style="margin-top:10px">On iPhone, open the downloaded file and tap <b>Add All</b>. On Android, open it with Google Calendar. This is a one-off snapshot.</p>
+  <div id="cFeedWrap" style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line)">
+    <label style="display:block; font-size:12px; font-weight:600; color:var(--text-2); margin-bottom:5px">Live subscription</label>
+    <div class="code" id="cFeed">turn on sync to get a live link</div>
+    <button class="btn sec" id="cCopyFeed" style="margin-top:10px">Copy subscription link</button>
+    <p class="hint">Subscribe once and your calendar updates itself. iPhone: Settings &rsaquo; Apps &rsaquo; Calendar &rsaquo; Accounts &rsaquo; Add Subscribed Calendar. Google Calendar: Other calendars &rsaquo; From URL.</p>
+  </div>
+</div>
+
+<!-- sync -->
+<div class="sheet" id="shSync">
+  <div class="grab"></div>
+  <h2>Sync across phones</h2>
+  <p class="lede">Your data lives on this device and works offline. Sync keeps a copy so your family's phones agree.</p>
+  <div id="syncOff">
+    <button class="btn" id="sCreate">Create a sync code</button>
+    <div class="field" style="margin-top:16px"><label for="sJoin">or join with an existing code</label><input id="sJoin" type="text" placeholder="e.g. K4M2-P8QX-7T3B" autocomplete="off" spellcheck="false" /></div>
+    <button class="btn sec" id="sJoinBtn">Join</button>
+  </div>
+  <div id="syncOn" style="display:none">
+    <div class="code" id="sCode">—</div>
+    <p class="hint" style="text-align:center; margin-bottom:14px">Enter this code on another phone to share the same book.</p>
+    <button class="btn" id="sNow">Sync now</button>
+    <button class="btn sec" id="sShareCode" style="margin-top:8px">Share code</button>
+    <button class="btn danger" id="sLeave" style="margin-top:8px">Stop syncing on this device</button>
+  </div>
+  <p class="hint" style="margin-top:16px">Anyone with the code can read and edit the book, so only share it with your household. No account, no email, no tracking.</p>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   Milkbook — a daily milk delivery register.
+
+   Local-first: every change is written to this device first and the app is
+   fully usable with no network and no account. Sync is an optional mirror,
+   merged per-day rather than per-blob so two people editing different days
+   on different phones both keep their edits.
+   ========================================================================= */
+
+const API = "https://milkbook.onrender.com";
+const $ = id => document.getElementById(id);
+const pad2 = n => String(n).padStart(2, "0");
+
+/* ---------------- dates ---------------- */
+const ymd = d => d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+function parseYmd(s){ const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); }
+function addDays(key, n){ const d = parseYmd(key); d.setDate(d.getDate() + n); return ymd(d); }
+const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+const keyOf = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
+
+const CURRENCIES = [
+  ["INR","\u20B9"], ["USD","$"], ["EUR","\u20AC"], ["GBP","\u00A3"], ["PKR","\u20A8"],
+  ["BDT","\u09F3"], ["LKR","Rs"], ["NPR","Rs"], ["AED","\u062F.\u0625"], ["AUD","$"], ["CAD","$"],
+];
+const DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+/* ---------------- store ----------------
+   Money is held in minor units and volume in millilitres, both integers.
+   Floating point on a running bill drifts, and this is somebody's money. */
+const STORE_KEY = "milkbook_v1";
+
+function freshStore(){
+  const now = new Date();
+  return {
+    v: 1,
+    settings: {
+      t: Date.now(), vendor: "", qtyMl: 1000, rateMinor: 6000,
+      currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
+      skipWeekly: [],
+    },
+    days: {},
+    sync: null,
+  };
+}
+function loadStore(){
+  try{
+    const raw = localStorage.getItem(STORE_KEY);
+    if(!raw) return freshStore();
+    const s = JSON.parse(raw);
+    const f = freshStore();
+    s.settings = Object.assign(f.settings, s.settings || {});
+    s.days = s.days || {};
+    return s;
+  }catch(e){ return freshStore(); }
+}
+function saveStore(s){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(s)); }catch(e){} }
+
+const symbolOf = code => (CURRENCIES.find(c => c[0] === code) || ["", "\u20B9"])[1];
+
+/* ---------------- pure domain ---------------- */
+function dayInfo(store, key){
+  const st = store.settings, e = store.days[key] || null;
+  const dow = parseYmd(key).getDay();
+  const state = e && e.s ? e.s : ((st.skipWeekly || []).includes(dow) ? "off" : "yes");
+  const qtyMl = state === "yes" ? (e && e.q != null ? e.q : st.qtyMl) : 0;
+  return { state, qtyMl, custom: !!(e && e.q != null) };
+}
+
+function monthSummary(store, y, m, todayKey){
+  const n = daysInMonth(y, m);
+  const start = store.settings.startDate;
+  let totalMl = 0, delivered = 0, skipped = 0, away = 0, off = 0;
+  for(let d = 1; d <= n; d++){
+    const key = keyOf(y, m, d);
+    if(key < start || key > todayKey) continue;
+    const info = dayInfo(store, key);
+    if(info.state === "yes"){ delivered++; totalMl += info.qtyMl; }
+    else if(info.state === "skip") skipped++;
+    else if(info.state === "away") away++;
+    else off++;
+  }
+  // one rounding at the end, the way a vendor totals litres then multiplies
+  const amountMinor = Math.round(totalMl * store.settings.rateMinor / 1000);
+  return { totalMl, delivered, skipped, away, off, amountMinor };
+}
+
+/* Field-level last-write-wins. A whole-blob merge would silently discard
+   one phone's edits whenever two people touched the book the same day. */
+function mergeStores(a, b){
+  const out = {
+    v: 1,
+    settings: ((b.settings || {}).t || 0) > ((a.settings || {}).t || 0)
+      ? Object.assign({}, b.settings) : Object.assign({}, a.settings),
+    days: {},
+  };
+  const ad = a.days || {}, bd = b.days || {};
+  for(const k of new Set([...Object.keys(ad), ...Object.keys(bd)])){
+    const x = ad[k], y = bd[k];
+    if(!x){ out.days[k] = y; continue; }
+    if(!y){ out.days[k] = x; continue; }
+    out.days[k] = (y.t || 0) > (x.t || 0) ? y : x;
+  }
+  return out;
+}
+
+const fmtMoney = (minor, code) => symbolOf(code) + (minor / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtL = ml => (ml / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+/* ---------------- ics ----------------
+   Calendar clients are strict: CRLF endings, folding at 75 octets, and
+   all-day DTEND is exclusive. Getting any of those wrong makes the file
+   import as empty, which looks like the app is broken. */
+function icsEscape(s){ return String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n"); }
+const ICS_ENC = new TextEncoder();
+function icsFold(line){
+  // RFC 5545 folds at 75 octets, not characters, and must not split a
+  // multi-octet character. Currency symbols and dashes make these differ.
+  if(ICS_ENC.encode(line).length <= 75) return line;
+  const segs = [];
+  let cur = "", used = 0, budget = 75;
+  for(const ch of line){
+    const n = ICS_ENC.encode(ch).length;
+    if(used + n > budget){ segs.push(cur); cur = ch; used = n; budget = 74; }
+    else { cur += ch; used += n; }
+  }
+  segs.push(cur);
+  return segs.join("\r\n ");
+}
+const icsDate = key => key.replace(/-/g, "");
+
+function runsOf(store, fromKey, toKey, wanted){
+  const runs = [];
+  let cur = null;
+  for(let k = fromKey; k <= toKey; k = addDays(k, 1)){
+    const st = dayInfo(store, k).state;
+    if(st === wanted){
+      if(cur) cur.end = k; else cur = { start: k, end: k };
+    }else if(cur){ runs.push(cur); cur = null; }
+  }
+  if(cur) runs.push(cur);
+  return runs;
+}
+
+function buildICS(store, opts){
+  const o = Object.assign({ away: true, skipped: false, bills: true, months: 6, now: new Date() }, opts || {});
+  const stamp = o.now.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  const todayKey = ymd(o.now);
+  const cur = store.settings.currency;
+  const name = store.settings.vendor ? `Milk \u2014 ${store.settings.vendor}` : "Milk";
+
+  const L = [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Milkbook//Milk delivery//EN",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    "X-WR-CALNAME:" + icsEscape(name), "X-WR-TIMEZONE:UTC",
+  ];
+  const ev = (uid, startKey, endExclusiveKey, summary, desc, alarm) => {
+    L.push("BEGIN:VEVENT", "UID:" + uid + "@milkbook", "DTSTAMP:" + stamp,
+      "DTSTART;VALUE=DATE:" + icsDate(startKey), "DTEND;VALUE=DATE:" + icsDate(endExclusiveKey),
+      "SUMMARY:" + icsEscape(summary), "TRANSP:TRANSPARENT");
+    if(desc) L.push("DESCRIPTION:" + icsEscape(desc));
+    if(alarm) L.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + icsEscape(summary), "TRIGGER:-PT9H", "END:VALARM");
+    L.push("END:VEVENT");
+  };
+
+  const first = new Date(o.now.getFullYear(), o.now.getMonth() - (o.months - 1), 1);
+  const fromKey = ymd(first) < store.settings.startDate ? store.settings.startDate : ymd(first);
+  const lastOfThis = keyOf(o.now.getFullYear(), o.now.getMonth(), daysInMonth(o.now.getFullYear(), o.now.getMonth()));
+
+  if(o.away) for(const r of runsOf(store, fromKey, lastOfThis, "away"))
+    ev("away-" + r.start, r.start, addDays(r.end, 1), "No milk \u2014 away", "Delivery paused while away.", false);
+  if(o.skipped) for(const r of runsOf(store, fromKey, lastOfThis, "skip"))
+    ev("skip-" + r.start, r.start, addDays(r.end, 1), "No milk delivered", "Marked as not delivered.", false);
+
+  if(o.bills){
+    for(let i = 0; i < o.months; i++){
+      const d = new Date(o.now.getFullYear(), o.now.getMonth() - i, 1);
+      const y = d.getFullYear(), m = d.getMonth();
+      const s = monthSummary(store, y, m, todayKey);
+      if(s.delivered === 0) continue;
+      const endKey = keyOf(y, m, daysInMonth(y, m));
+      ev("bill-" + y + "-" + pad2(m + 1), endKey, addDays(endKey, 1),
+        `Milk bill ${fmtMoney(s.amountMinor, cur)} \u00b7 ${fmtL(s.totalMl)} L`,
+        `${MONTHS[m]} ${y}\n${s.delivered} deliveries \u00b7 ${fmtL(s.totalMl)} L at ${fmtMoney(store.settings.rateMinor, cur)}/L\nTotal ${fmtMoney(s.amountMinor, cur)}`,
+        true);
+    }
+  }
+  L.push("END:VCALENDAR");
+  return L.map(icsFold).join("\r\n") + "\r\n";
+}
+
+function billText(store, y, m, todayKey){
+  const s = monthSummary(store, y, m, todayKey);
+  const cur = store.settings.currency;
+  const lines = [
+    `Milk bill \u2014 ${MONTHS[m]} ${y}`,
+    store.settings.vendor ? `Vendor: ${store.settings.vendor}` : null,
+    ``,
+    `Delivered:  ${s.delivered} days`,
+    s.skipped ? `Skipped:    ${s.skipped} days` : null,
+    s.away ? `Away:       ${s.away} days` : null,
+    ``,
+    `Quantity:   ${fmtL(s.totalMl)} L`,
+    `Rate:       ${fmtMoney(store.settings.rateMinor, cur)} / L`,
+    `Total:      ${fmtMoney(s.amountMinor, cur)}`,
+  ].filter(x => x !== null);
+  return lines.join("\n");
+}
+
+/* ---------------- app state ---------------- */
+let store = loadStore();
+let viewY, viewM, editKey = null, editState = "yes";
+const today = () => ymd(new Date());
+
+/* ---------------- render ---------------- */
+function renderDow(){
+  const w = $("dow"); w.innerHTML = "";
+  for(let i = 0; i < 7; i++){
+    const s = document.createElement("span");
+    s.textContent = DOW_SHORT[i].slice(0, 2);
+    w.appendChild(s);
+  }
+}
+
+const ICON_TICK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const ICON_CROSS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+const ICON_AWAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5a2.12 2.12 0 0 0-3-3L13 8 4.8 6.2a.5.5 0 0 0-.5.8l3.9 4.9-2 2H3.5a.5.5 0 0 0-.4.8l2 2.6 2.6 2a.5.5 0 0 0 .8-.4v-2.7l2-2 4.9 3.9a.5.5 0 0 0 .8-.5z"/></svg>';
+
+function render(){
+  const tk = today();
+  $("mLabel").textContent = MONTHS[viewM].slice(0, 3) + " " + viewY;
+  const lastAllowed = new Date();
+  $("nextM").disabled = (viewY > lastAllowed.getFullYear()) ||
+    (viewY === lastAllowed.getFullYear() && viewM >= lastAllowed.getMonth());
+
+  const s = monthSummary(store, viewY, viewM, tk);
+  const cur = store.settings.currency;
+  $("sAmount").innerHTML = s.delivered
+    ? fmtMoney(s.amountMinor, cur) + ` <small>${fmtL(s.totalMl)} L</small>`
+    : "\u2014";
+  $("sSub").textContent = s.delivered
+    ? `${s.delivered} delivered${s.skipped ? ` \u00b7 ${s.skipped} skipped` : ""}${s.away ? ` \u00b7 ${s.away} away` : ""}`
+    : "nothing recorded this month";
+
+  const g = $("grid"); g.innerHTML = "";
+  const firstDow = new Date(viewY, viewM, 1).getDay();
+  for(let i = 0; i < firstDow; i++){
+    const b = document.createElement("div"); b.className = "day blank"; g.appendChild(b);
+  }
+  const n = daysInMonth(viewY, viewM);
+  for(let d = 1; d <= n; d++){
+    const key = keyOf(viewY, viewM, d);
+    const info = dayInfo(store, key);
+    const btn = document.createElement("button");
+    const future = key > tk, pre = key < store.settings.startDate;
+    btn.className = "day " + info.state + (future ? " future" : "") + (pre ? " pre" : "") + (key === tk ? " today" : "");
+    const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS : info.state === "away" ? ICON_AWAY : "";
+    btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` +
+      (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
+    btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${info.state}`);
+    if(!pre){
+      let held = false, timer = 0;
+      btn.addEventListener("pointerdown", () => { held = false; timer = setTimeout(() => { held = true; openDay(key); }, 450); });
+      const cancel = () => clearTimeout(timer);
+      btn.addEventListener("pointerup", () => { cancel(); if(!held) cycle(key); });
+      btn.addEventListener("pointerleave", cancel);
+      btn.addEventListener("pointercancel", cancel);
+    }
+    g.appendChild(btn);
+  }
+  const t = dayInfo(store, tk);
+  $("fabTodayLbl").textContent = t.state === "yes" ? "Delivered today" : t.state === "skip" ? "Skipped today" : t.state === "away" ? "Away today" : "No delivery today";
+}
+
+const CYCLE = ["yes", "skip", "away"];
+function setDay(key, state, qtyMl){
+  const e = { s: state, t: Date.now() };
+  if(state === "yes" && qtyMl != null && qtyMl !== store.settings.qtyMl) e.q = qtyMl;
+  store.days[key] = e;
+  saveStore(store);
+  queueSync();
+}
+function cycle(key){
+  const cur = dayInfo(store, key).state;
+  const next = CYCLE[(CYCLE.indexOf(cur) + 1) % CYCLE.length] || "yes";
+  setDay(key, cur === "off" ? "yes" : next, dayInfo(store, key).custom ? dayInfo(store, key).qtyMl : null);
+  render();
+}
+
+/* ---------------- sheets ---------------- */
+let openSheet = null;
+function sheet(id){
+  if(openSheet) $(openSheet).classList.remove("on");
+  openSheet = id;
+  if(id){ $(id).classList.add("on"); $("scrim").classList.add("on"); }
+  else $("scrim").classList.remove("on");
+}
+$("scrim").addEventListener("click", () => sheet(null));
+
+let toastT = null;
+function toast(m){
+  const el = $("toast"); el.textContent = m; el.classList.add("on");
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 2200);
+}
+
+/* settings */
+function openSettings(){
+  const st = store.settings;
+  $("fVendor").value = st.vendor || "";
+  $("fQty").value = st.qtyMl / 1000;
+  $("fRate").value = st.rateMinor / 100;
+  $("fStart").value = st.startDate;
+  const sel = $("fCur"); sel.innerHTML = "";
+  for(const [code, sym] of CURRENCIES){
+    const o = document.createElement("option");
+    o.value = code; o.textContent = `${code}  ${sym}`;
+    if(code === st.currency) o.selected = true;
+    sel.appendChild(o);
+  }
+  const off = $("fOff"); off.innerHTML = "";
+  for(let i = 0; i < 7; i++){
+    const c = document.createElement("button");
+    c.className = "chip" + ((st.skipWeekly || []).includes(i) ? " on" : "");
+    c.textContent = DOW_SHORT[i]; c.dataset.d = i;
+    c.addEventListener("click", () => c.classList.toggle("on"));
+    off.appendChild(c);
+  }
+  sheet("shSettings");
+}
+$("btnSettings").addEventListener("click", openSettings);
+$("saveSettings").addEventListener("click", () => {
+  const qty = Math.max(0, Math.round(parseFloat($("fQty").value || "0") * 1000));
+  const rate = Math.max(0, Math.round(parseFloat($("fRate").value || "0") * 100));
+  store.settings = Object.assign(store.settings, {
+    t: Date.now(),
+    vendor: $("fVendor").value.trim().slice(0, 60),
+    qtyMl: qty || 1000,
+    rateMinor: rate,
+    currency: $("fCur").value,
+    startDate: $("fStart").value || store.settings.startDate,
+    skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
+  });
+  saveStore(store); queueSync(); render(); sheet(null); toast("Saved");
+});
+$("btnReset").addEventListener("click", () => {
+  if(!confirm("Erase all milk records on this device? This cannot be undone.")) return;
+  store = freshStore(); saveStore(store); render(); sheet(null); toast("Erased");
+});
+
+/* day editor */
+function openDay(key){
+  editKey = key;
+  const info = dayInfo(store, key);
+  editState = info.state === "off" ? "yes" : info.state;
+  const d = parseYmd(key);
+  $("dTitle").textContent = `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+  const w = $("dStates"); w.innerHTML = "";
+  for(const [val, label] of [["yes","Delivered"],["skip","Not delivered"],["away","Away"]]){
+    const c = document.createElement("button");
+    c.className = "chip" + (val === editState ? " on" : "");
+    c.textContent = label;
+    c.addEventListener("click", () => {
+      editState = val;
+      [...w.children].forEach(x => x.classList.toggle("on", x === c));
+      $("dQtyWrap").style.display = val === "yes" ? "" : "none";
+    });
+    w.appendChild(c);
+  }
+  $("dQty").value = (info.state === "yes" ? info.qtyMl : store.settings.qtyMl) / 1000;
+  $("dQtyWrap").style.display = editState === "yes" ? "" : "none";
+  sheet("shDay");
+}
+$("dSave").addEventListener("click", () => {
+  const q = Math.max(0, Math.round(parseFloat($("dQty").value || "0") * 1000));
+  setDay(editKey, editState, editState === "yes" ? q : null);
+  render(); sheet(null); toast("Updated");
+});
+
+/* away range */
+$("btnAway").addEventListener("click", () => {
+  const t = today();
+  $("aFrom").value = t; $("aTo").value = t;
+  sheet("shAway");
+});
+function applyRange(state){
+  let from = $("aFrom").value, to = $("aTo").value;
+  if(!from || !to) return toast("Pick both dates");
+  if(from > to){ const x = from; from = to; to = x; }
+  let n = 0;
+  for(let k = from; k <= to && n < 800; k = addDays(k, 1), n++) setDay(k, state, null);
+  render(); sheet(null);
+  toast(`${n} ${n === 1 ? "day" : "days"} marked ${state === "away" ? "away" : "delivered"}`);
+}
+$("aApply").addEventListener("click", () => applyRange("away"));
+$("aClear").addEventListener("click", () => applyRange("yes"));
+
+/* bill */
+$("btnBill").addEventListener("click", () => {
+  const tk = today();
+  const s = monthSummary(store, viewY, viewM, tk);
+  const cur = store.settings.currency;
+  $("bTitle").textContent = `Bill \u2014 ${MONTHS[viewM]} ${viewY}`;
+  $("bVendor").textContent = store.settings.vendor || "No vendor name set";
+  const rows = [
+    ["Days delivered", String(s.delivered)],
+    s.skipped ? ["Days skipped", String(s.skipped)] : null,
+    s.away ? ["Days away", String(s.away)] : null,
+    s.off ? ["Vendor off", String(s.off)] : null,
+    ["Total quantity", fmtL(s.totalMl) + " L"],
+    ["Rate", fmtMoney(store.settings.rateMinor, cur) + " / L"],
+  ].filter(Boolean);
+  $("bRows").innerHTML = rows.map(([k, v]) => `<div class="billrow"><span>${k}</span><b class="num">${v}</b></div>`).join("");
+  $("bTotal").textContent = fmtMoney(s.amountMinor, cur);
+  sheet("shBill");
+});
+async function shareBill(copyOnly){
+  const text = billText(store, viewY, viewM, today());
+  try{
+    if(!copyOnly && navigator.share){ await navigator.share({ text }); return; }
+    await navigator.clipboard.writeText(text); toast("Bill copied");
+  }catch(e){ toast("Could not share"); }
+}
+$("bShare").addEventListener("click", () => shareBill(false));
+$("bCopy").addEventListener("click", () => shareBill(true));
+
+/* calendar */
+const calOpts = { away: true, skipped: false, bills: true };
+$("btnCal").addEventListener("click", () => {
+  const w = $("cOpts"); w.innerHTML = "";
+  for(const [k, label] of [["bills","Monthly bill reminder"],["away","Away days"],["skipped","Skipped days"]]){
+    const c = document.createElement("button");
+    c.className = "chip" + (calOpts[k] ? " on" : "");
+    c.textContent = label;
+    c.addEventListener("click", () => { calOpts[k] = !calOpts[k]; c.classList.toggle("on", calOpts[k]); });
+    w.appendChild(c);
+  }
+  $("cFeed").textContent = store.sync ? `${API}/cal/${store.sync}.ics` : "turn on sync to get a live link";
+  sheet("shCal");
+});
+$("cDownload").addEventListener("click", () => {
+  const ics = buildICS(store, calOpts);
+  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "milkbook.ics";
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  toast("Calendar file downloaded");
+});
+$("cCopyFeed").addEventListener("click", async () => {
+  if(!store.sync) return toast("Turn on sync first");
+  try{ await navigator.clipboard.writeText(`${API}/cal/${store.sync}.ics`); toast("Link copied"); }
+  catch(e){ toast("Could not copy"); }
+});
+
+/* ---------------- sync ---------------- */
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function newCode(){
+  const a = new Uint8Array(12); crypto.getRandomValues(a);
+  const s = [...a].map(x => CODE_ALPHABET[x % CODE_ALPHABET.length]).join("");
+  return s.slice(0, 4) + "-" + s.slice(4, 8) + "-" + s.slice(8, 12);
+}
+const normCode = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+
+let syncTimer = 0, syncing = false;
+function queueSync(){
+  if(!store.sync) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => doSync(true), 1200);
+}
+async function doSync(quiet){
+  if(!store.sync || syncing) return;
+  syncing = true;
+  try{
+    const res = await fetch(`${API}/api/store/${encodeURIComponent(store.sync)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: store.settings, days: store.days }),
+    });
+    if(!res.ok) throw new Error("http " + res.status);
+    const remote = await res.json();
+    const merged = mergeStores(store, remote);
+    store.settings = merged.settings; store.days = merged.days;
+    saveStore(store); render();
+    if(!quiet) toast("Synced");
+  }catch(e){
+    if(!quiet) toast("Sync unavailable \u2014 your data is safe on this device");
+  }finally{ syncing = false; }
+}
+function renderSync(){
+  const on = !!store.sync;
+  $("syncOff").style.display = on ? "none" : "";
+  $("syncOn").style.display = on ? "" : "none";
+  $("sCode").textContent = on ? store.sync : "\u2014";
+  $("syncSub").textContent = on ? "On \u2014 " + store.sync : "Share one code with your family";
+}
+$("btnSync").addEventListener("click", () => { renderSync(); sheet("shSync"); });
+$("sCreate").addEventListener("click", () => {
+  store.sync = newCode(); saveStore(store); renderSync(); doSync(false); toast("Sync on");
+});
+$("sJoinBtn").addEventListener("click", () => {
+  const c = normCode($("sJoin").value);
+  if(c.length !== 12) return toast("That code doesn't look right");
+  store.sync = c.slice(0, 4) + "-" + c.slice(4, 8) + "-" + c.slice(8, 12);
+  saveStore(store); renderSync(); doSync(false);
+});
+$("sNow").addEventListener("click", () => doSync(false));
+$("sShareCode").addEventListener("click", async () => {
+  const text = `Join our Milkbook with this code: ${store.sync}\nhttps://rahulatrkm.github.io/milkbook/`;
+  try{
+    if(navigator.share){ await navigator.share({ text }); return; }
+    await navigator.clipboard.writeText(text); toast("Copied");
+  }catch(e){}
+});
+$("sLeave").addEventListener("click", () => {
+  store.sync = null; saveStore(store); renderSync(); toast("Sync off \u2014 data stays on this device");
+});
+
+/* ---------------- nav ---------------- */
+$("prevM").addEventListener("click", () => {
+  viewM--; if(viewM < 0){ viewM = 11; viewY--; } render();
+});
+$("nextM").addEventListener("click", () => {
+  if($("nextM").disabled) return;
+  viewM++; if(viewM > 11){ viewM = 0; viewY++; } render();
+});
+$("fabToday").addEventListener("click", () => {
+  const n = new Date();
+  if(viewY !== n.getFullYear() || viewM !== n.getMonth()){ viewY = n.getFullYear(); viewM = n.getMonth(); render(); return; }
+  cycle(today());
+});
+
+/* ---------------- init ---------------- */
+(function init(){
+  const n = new Date();
+  viewY = n.getFullYear(); viewM = n.getMonth();
+  renderDow(); render(); renderSync();
+  if(store.sync) doSync(true);
+  if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  document.addEventListener("visibilitychange", () => { if(!document.hidden && store.sync) doSync(true); });
+})();
+</script>
+</body>
+</html>

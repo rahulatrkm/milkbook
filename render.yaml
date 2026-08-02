@@ -1,0 +1,14 @@
+# Render.com free-tier deploy for the Milkbook sync mirror + calendar feed.
+# New > Blueprint > connect this repo. Free plan, auto-deploys on push.
+services:
+  - type: web
+    name: milkbook
+    runtime: python
+    plan: free
+    rootDir: .
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT --timeout 60 --workers 1 wsgi:app"
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
