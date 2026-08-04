@@ -428,5 +428,52 @@ ok("and the same holds for full control",
 ok("full control is stored as a boolean when it is sent",
    M.sanitise({"settings": {"t": 1, "fullControl": "yes"}, "days": {}})["settings"]["fullControl"] is True)
 
+print("\nSETTINGS — two phones changing two different things")
+# The whole settings object used to be one item with one timestamp. Because
+# sanitise gives every known field a default whether the client sent it or not,
+# a phone that merely saved later overwrote settings it had never touched. A
+# two-phone test against the live mirror is what caught it: one phone's vendor
+# name simply vanished.
+_dad = M.sanitise({"settings": {"t": 10, "vendor": "Verma Dairy", "at": {"vendor": 10}},
+                   "days": {}})
+_mum = M.sanitise({"settings": {"t": 11, "qtyMl": 500, "at": {"qtyMl": 11}}, "days": {}})
+_both = M.merge(_dad, _mum)["settings"]
+ok("one phone's vendor name survives", _both["vendor"] == "Verma Dairy", _both["vendor"])
+ok("the other phone's litres survive", _both["qtyMl"] == 500, str(_both["qtyMl"]))
+ok("whichever order they merge in",
+   M.merge(_mum, _dad)["settings"]["vendor"] == "Verma Dairy"
+   and M.merge(_mum, _dad)["settings"]["qtyMl"] == 500)
+ok("the stamps travel with the settings", "at" in _both and _both["at"].get("vendor") == 10)
+
+_early = M.sanitise({"settings": {"t": 1, "vendor": "A", "at": {"vendor": 1}}, "days": {}})
+_late = M.sanitise({"settings": {"t": 2, "vendor": "B", "at": {"vendor": 2}}, "days": {}})
+ok("the same setting edited twice takes the later one",
+   M.merge(_early, _late)["settings"]["vendor"] == "B")
+
+# Books written before stamping existed still merge the old way.
+_oldA = M.sanitise({"settings": {"t": 5, "vendor": "Old"}, "days": {}})
+_oldB = M.sanitise({"settings": {"t": 9, "vendor": "Newer"}, "days": {}})
+ok("books from before stamping fall back to the whole-book timestamp",
+   M.merge(_oldA, _oldB)["settings"]["vendor"] == "Newer")
+
+print("\nRATES — what a litre cost on the day")
+_rated = M.sanitise({"settings": {"t": 1, "rateMinor": 6500, "startDate": "2026-07-01", "qtyMl": 1000},
+                     "days": {f"2026-07-{d:02d}": {"s": "yes", "t": 1} for d in range(1, 32)},
+                     "rates": {"2026-07-01": {"r": 6000, "t": 1},
+                               "2026-08-04": {"r": 6500, "t": 1}}})
+ok("rate changes are stored", len(_rated["rates"]) == 2, str(sorted(_rated["rates"])))
+_july = M.month_summary(_rated, 2026, 7, "2026-08-20")
+ok("a month is billed at the rate in force, not the latest one",
+   _july["amountMinor"] == 186000, str(_july["amountMinor"]))
+ok("the server and the page round the same way",
+   M._round_half_up(2.5) == 3 and M._round_half_up(3.5) == 4,
+   "Python's round is half-to-even and would give 2 and 4")
+_mixed = M.sanitise({"settings": {"t": 1, "rateMinor": 8000, "startDate": "2026-09-01", "qtyMl": 1000},
+                     "days": {f"2026-09-{d:02d}": {"s": "yes", "t": 1} for d in range(1, 11)},
+                     "rates": {"2026-09-01": {"r": 6000, "t": 1}, "2026-09-06": {"r": 8000, "t": 1}}})
+ok("a rise mid-month splits the month",
+   M.month_summary(_mixed, 2026, 9, "2026-09-10")["amountMinor"] == 5 * 6000 + 5 * 8000,
+   str(M.month_summary(_mixed, 2026, 9, "2026-09-10")["amountMinor"]))
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

@@ -108,7 +108,7 @@ def _carry_unknown(raw: dict, known: set) -> dict:
     return out
 
 
-KNOWN_SETTINGS = {"t", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
+KNOWN_SETTINGS = {"t", "at", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
                   "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl"}
 KNOWN_TOP = {"settings", "days", "locks", "payments", "rates"}
 
@@ -140,6 +140,15 @@ def sanitise(book: dict) -> dict:
         for flag in ("lockChoice", "fullControl"):
             if flag in raw_settings:
                 settings[flag] = bool(raw_settings[flag])
+        # When each individual setting last changed. Without this the whole
+        # settings object is one item with one timestamp, and because every
+        # field above is given a default whether the client sent it or not, a
+        # phone that merely saved later wipes a setting it never touched.
+        raw_at = raw_settings.get("at")
+        if isinstance(raw_at, dict):
+            settings["at"] = {k: int(v) for k, v in list(raw_at.items())[:40]
+                              if isinstance(k, str) and len(k) <= 40
+                              and isinstance(v, (int, float))}
         if not DAY_RE.match(settings["startDate"]):
             settings["startDate"] = ""
         settings.update(_carry_unknown(raw_settings, KNOWN_SETTINGS))
@@ -217,12 +226,33 @@ def sanitise(book: dict) -> dict:
 
 
 def merge(a: dict, b: dict) -> dict:
-    """Per-day last-write-wins; settings win as a unit on their own timestamp."""
+    """Per-day and per-setting last-write-wins."""
     a_set, b_set = a.get("settings") or {}, b.get("settings") or {}
-    newer, older = (b_set, a_set) if (b_set.get("t") or 0) > (a_set.get("t") or 0) else (a_set, b_set)
-    # The newer copy wins field by field, but a setting it never carried must
-    # not erase the one we already hold.
-    settings = {**older, **newer}
+    a_at, b_at = a_set.get("at") or {}, b_set.get("at") or {}
+    settings: dict = {**a_set, **b_set}
+    at: dict = {}
+    for key in set(a_set) | set(b_set):
+        if key in ("at", "t"):
+            continue
+        a_when, b_when = a_at.get(key), b_at.get(key)
+        if key not in a_set:
+            take_b = True
+        elif key not in b_set:
+            take_b = False
+        elif a_when is None and b_when is None:
+            # Books written before settings carried their own timestamps.
+            take_b = (b_set.get("t") or 0) > (a_set.get("t") or 0)
+        else:
+            # A setting nobody stamped is being carried, not changed, so it
+            # must not beat one somebody actually edited.
+            take_b = (b_when or 0) > (a_when or 0)
+        settings[key] = b_set[key] if take_b else a_set[key]
+        chosen = b_when if take_b else a_when
+        if chosen is not None:
+            at[key] = chosen
+    if at:
+        settings["at"] = at
+    settings["t"] = max(a_set.get("t") or 0, b_set.get("t") or 0)
 
     def newest(x_map: dict, y_map: dict) -> dict:
         out = {}

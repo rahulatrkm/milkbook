@@ -16,6 +16,10 @@
 <meta property="og:description" content="One tap a day. Exact monthly bill. Syncs across the family. Works offline." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%234338ca'/><path d='M12 6h8v3l2 5v10a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V14l2-5z' fill='%23fff'/></svg>" />
+<!-- iOS will not take an SVG or a data URI for the home screen. Without a real
+     PNG here it screenshots the page instead, so anyone who added Milkbook to
+     their iPhone got a blurry thumbnail of the calendar as the app icon. -->
+<link rel="apple-touch-icon" href="icon-180.png" />
 <style>
   :root{
     --bg:#f7f8fa; --surface:#ffffff; --raised:#f1f3f7;
@@ -52,6 +56,10 @@
      element with both stays on screen while every script believes it is gone.
      That shipped once: the full-control banner sat on every book, permanently. */
   [hidden]{display:none!important}
+  /* Also !important: .legend i sets display and is more specific, so a plain
+     .hide lost the argument and the entry stayed on screen. Same trap as the
+     hidden attribute, one selector along. */
+  .hide{display:none!important}
   button{font:inherit; color:inherit; border:0; background:none; cursor:pointer}
 
   .wrap{width:100%; max-width:520px; padding:0 16px calc(96px + env(safe-area-inset-bottom))}
@@ -90,6 +98,9 @@
     aspect-ratio:1/1; border-radius:10px; position:relative;
     display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
     background:var(--raised); border:1px solid transparent;
+    /* No double-tap zoom and no iOS callout, so a long press opens the day
+       instead of offering to copy the number inside it. */
+    touch-action:manipulation; -webkit-touch-callout:none;
     transition:transform .12s cubic-bezier(.22,1,.36,1), background .15s, border-color .15s;
   }
   .day:active{transform:scale(.93)}
@@ -100,8 +111,14 @@
   .day.yes{background:var(--good-soft)} .day.yes .n{color:var(--good)}
   .day.skip{background:var(--warn-soft)} .day.skip .n{color:var(--warn)}
   .day.away{background:var(--accent-soft)} .day.away .n{color:var(--accent)}
+  /* A standing day off and a day nobody has filled in yet used to differ only
+     by dashed versus solid border. That is a hairline at arm's length, and
+     invisible to anyone whose eyes are not what they were, so a day off read as
+     an unrecorded day and got marked delivered. The day off now carries its own
+     mark. */
   .day.off{background:transparent; border:1px dashed var(--line-2)}
   .day.off .n{color:var(--text-3)}
+  .day.off .m{color:var(--text-3); opacity:.75}
   .day.none{background:transparent; border:1px solid var(--line)}
   .day.none .n{color:var(--text-3)}
   .day.future{opacity:.55}
@@ -234,9 +251,13 @@
 
   #toast{position:fixed; left:50%; bottom:calc(88px + env(safe-area-inset-bottom)); transform:translate(-50%,10px);
     z-index:50; background:var(--text); color:var(--bg); padding:10px 18px; border-radius:999px;
-    font-size:13.5px; font-weight:550; opacity:0; transition:.26s cubic-bezier(.22,1,.36,1); pointer-events:none;
+    font-size:13.5px; font-weight:550; opacity:0; transition:opacity .26s cubic-bezier(.22,1,.36,1),
+    transform .26s cubic-bezier(.22,1,.36,1), visibility .26s; pointer-events:none;
+    /* Transparent is not gone: without this the Undo button stayed focusable
+       long after the toast had faded, an invisible target in the tab order. */
+    visibility:hidden;
     max-width:88vw; text-align:center; display:flex; align-items:center; gap:12px; justify-content:center}
-  #toast.on{opacity:1; transform:translate(-50%,0); pointer-events:auto}
+  #toast.on{opacity:1; visibility:visible; transform:translate(-50%,0); pointer-events:auto}
   #toast .undo{font-weight:700; color:var(--bg); text-decoration:underline; text-underline-offset:2px;
     padding:0 2px; flex:none}
 
@@ -440,8 +461,8 @@
   <p class="lede">Used to work out your monthly bill.</p>
   <div class="field"><label for="fVendor">Vendor name</label><input id="fVendor" type="text" placeholder="e.g. Ramesh Dairy" autocomplete="off" /></div>
   <div class="two">
-    <div class="field"><label for="fQty">Litres per day</label><input id="fQty" type="number" inputmode="decimal" step="0.25" min="0" /></div>
-    <div class="field"><label for="fRate">Price per litre</label><input id="fRate" type="number" inputmode="decimal" step="0.5" min="0" /></div>
+    <div class="field"><label for="fQty">Litres per day</label><input id="fQty" type="number" inputmode="decimal" step="0.25" min="0" max="100" /></div>
+    <div class="field"><label for="fRate">Price per litre</label><input id="fRate" type="number" inputmode="decimal" step="0.5" min="0" max="100000" /></div>
   </div>
   <div class="two">
     <div class="field"><label for="fCur">Currency</label><select id="fCur"></select></div>
@@ -502,7 +523,7 @@
   </div>
   <div class="field" id="dQtyWrap">
     <label for="dQty">Litres this day</label>
-    <input id="dQty" type="number" inputmode="decimal" step="0.25" min="0" />
+    <input id="dQty" type="number" inputmode="decimal" step="0.25" min="0" max="100" />
     <p class="hint">Leave as your default unless it was different.</p>
   </div>
   <button class="btn" id="dSave">Save</button>
@@ -614,7 +635,7 @@
   <button class="btn sec" id="cfNo" style="margin-top:8px">Cancel</button>
 </div>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -646,6 +667,20 @@ const CURRENCIES = [
 ];
 const DOW_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+// Roughly eleven years. Long enough for any real book, short enough that a
+// mistyped year cannot lock the phone up filling in days that never happened.
+const MAX_FILL_DAYS = 4000;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/* The mirror will not store more than this, and it says so by quietly clamping
+   whatever it is sent. A phone with no limit of its own therefore kept a number
+   the shared book had already rejected: the phone billed 500 litres a day, the
+   book billed 100, every sync re-sent the same rejected number, and the two
+   never converged. Whatever these are, they have to match app.py. */
+const MAX_QTY_ML = 100000;          // 100 litres in a day
+const MAX_RATE_MINOR = 10000000;    // and a price per litre nobody will reach
+const clampQty = ml => Math.max(0, Math.min(Math.round(ml), MAX_QTY_ML));
+const clampRate = m => Math.max(0, Math.min(Math.round(m), MAX_RATE_MINOR));
 
 /* ---------------- store ----------------
    Money is held in minor units and volume in millilitres, both integers.
@@ -657,13 +692,18 @@ function freshStore(){
   return {
     v: 1,
     settings: {
-      t: Date.now(), vendor: "", qtyMl: 1000, rateMinor: 6000,
+      /* A book nobody has edited yet must never win a merge. Stamping a fresh
+         store with the current time meant a phone that had just installed the
+         app, then joined the family book with a code, overwrote the vendor,
+         price and start date with its own untouched defaults. */
+      t: 0, vendor: "", qtyMl: 1000, rateMinor: 6000,
       currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
       skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true, fullControl: false,
     },
     days: {},
     locks: {},
     payments: {},
+    rates: {},
     sync: null,
   };
 }
@@ -678,6 +718,7 @@ function loadStore(){
     s.days = s.days || {};
     s.locks = s.locks || {};
     s.payments = s.payments || {};
+    s.rates = s.rates || {};
     /* Closing the books used to be off unless you went looking for it, which is
        the wrong way round for a record people bill from. Books written before
        that changed are moved onto it once. `lockChoice` is set whenever the
@@ -708,20 +749,33 @@ const SEED_MARK = "milkbook_seeded_v1";
 function buildLocalCopy(){
   const doc = document.documentElement.cloneNode(true);
 
+  // Whatever sheet you opened to reach the save button is open in the clone too,
+  // so every saved copy used to launch with Settings across the screen.
+  doc.querySelectorAll(".sheet.on").forEach(el => el.classList.remove("on"));
+  const scrim = doc.querySelector("#scrim");
+  if(scrim) scrim.classList.remove("on");
+  const toastEl = doc.querySelector("#toast");
+  if(toastEl){ toastEl.classList.remove("on"); toastEl.innerHTML = ""; }
+
   // A saved file has no server, so anything that needs one is removed rather
-  // than left to fail quietly: the worker, the manifest, and the view ping.
-  doc.querySelectorAll('link[rel="manifest"], script[data-count], script[data-seed]')
+  // than left to fail quietly: the worker, the manifest, the home screen icon,
+  // and the view ping.
+  doc.querySelectorAll('link[rel="manifest"], link[rel="apple-touch-icon"], script[data-count], script[data-seed]')
      .forEach(el => el.remove());
 
   const seed = document.createElement("script");
   seed.setAttribute("data-seed", "1");
+  // A book containing a closing script tag as text would otherwise end this one
+  // early and spill the rest of somebody's records into the page as markup.
+  // (Written carefully: the literal would end this very tag.)
+  const packed = JSON.stringify(JSON.stringify(store)).replace(/<\//g, "<\\/");
   seed.textContent =
     "(function(){try{" +
     "var k=" + JSON.stringify(STORE_KEY) + ",m=" + JSON.stringify(SEED_MARK) + ";" +
     "if(localStorage.getItem(m))return;" +           // already opened before
     "localStorage.setItem(m,'1');" +
     "if(localStorage.getItem(k))return;" +           // it already has a book
-    "localStorage.setItem(k," + JSON.stringify(JSON.stringify(store)) + ");" +
+    "localStorage.setItem(k," + packed + ");" +
     "}catch(e){}})();";
   doc.querySelector("head").appendChild(seed);
 
@@ -772,22 +826,46 @@ function dayInfo(store, key){
   return { state, qtyMl, custom: !!(e && e.q != null) };
 }
 
+/* What a litre cost on a given day.
+
+   A vendor putting the price up is the most ordinary thing that happens to a
+   milk book, and with one rate for all time it silently restated every bill
+   ever sent — raise the price today and last month's total moved with it. A
+   rate change is recorded with the date it starts, and a day is billed at
+   whatever was in force on it. */
+function rateFor(store, dayKey){
+  const rates = store.rates || {};
+  let best = null;
+  for(const from of Object.keys(rates)){
+    if(from <= dayKey && (best === null || from > best)) best = from;
+  }
+  return best === null ? (Number(store.settings.rateMinor) || 0)
+                       : (Number(rates[best].r) || 0);
+}
+
 function monthSummary(store, y, m, todayKey){
   const n = daysInMonth(y, m);
   const start = store.settings.startDate;
   let totalMl = 0, delivered = 0, skipped = 0, away = 0, off = 0, pending = 0;
+  // Litres are gathered per rate so each block is still totalled and multiplied
+  // once, the way a vendor writes a bill, even when a price rise lands mid-month.
+  const byRate = new Map();
   for(let d = 1; d <= n; d++){
     const key = keyOf(y, m, d);
     if(key < start || key > todayKey) continue;
     const info = dayInfo(store, key);
-    if(info.state === "yes"){ delivered++; totalMl += info.qtyMl; }
+    if(info.state === "yes"){
+      delivered++; totalMl += info.qtyMl;
+      const r = rateFor(store, key);
+      byRate.set(r, (byRate.get(r) || 0) + info.qtyMl);
+    }
     else if(info.state === "skip") skipped++;
     else if(info.state === "away") away++;
     else if(info.state === "none") pending++;
     else off++;
   }
-  // one rounding at the end, the way a vendor totals litres then multiplies
-  const amountMinor = Math.round(totalMl * store.settings.rateMinor / 1000);
+  let amountMinor = 0;
+  for(const [r, ml] of byRate) amountMinor += Math.round(ml * r / 1000);
   return { totalMl, delivered, skipped, away, off, pending, amountMinor };
 }
 
@@ -855,15 +933,49 @@ function dayLocked(store, key, todayKey){
 /* Field-level last-write-wins. A whole-blob merge would silently discard
    one phone's edits whenever two people touched the book the same day. */
 
-/* The newer copy of the settings wins, but a field it does not carry must not
-   erase ours. An older phone — or a server that has not been redeployed yet —
-   answers with a book that never heard of the settings we just added, and
-   replacing wholesale would quietly reset them. */
+/* The newer copy of a setting wins, one setting at a time.
+
+   Comparing whole blobs on one timestamp looked field-level because the fields
+   were merged with Object.assign, but the settings form writes every field on
+   every save, so both sides always carried every key and the newer blob simply
+   won outright. Two people changing two different settings that day meant one
+   of them silently lost theirs. Each setting now carries when it last changed. */
 function mergeSettings(a, b){
   const mine = a || {}, theirs = b || {};
-  const newer = (theirs.t || 0) > (mine.t || 0) ? theirs : mine;
-  const older = newer === theirs ? mine : theirs;
-  return Object.assign({}, older, newer);
+  const mineAt = mine.at || {}, theirsAt = theirs.at || {};
+  const out = Object.assign({}, mine, theirs);
+  const at = {};
+  for(const key of new Set([...Object.keys(mine), ...Object.keys(theirs)])){
+    if(key === "at" || key === "t") continue;
+    // A setting nobody has stamped is one being carried along, not one somebody
+    // changed. Falling back to the blob timestamp let an untouched field on a
+    // recently-saved phone overwrite a real edit made on another.
+    const mineWhen = mineAt[key], theirsWhen = theirsAt[key];
+    const haveMine = key in mine, haveTheirs = key in theirs;
+    let take;
+    if(!haveMine) take = "theirs";
+    else if(!haveTheirs) take = "mine";
+    else if(mineWhen == null && theirsWhen == null)
+      take = (theirs.t || 0) > (mine.t || 0) ? "theirs" : "mine";   // books from before stamping
+    else take = (theirsWhen || 0) > (mineWhen || 0) ? "theirs" : "mine";
+    out[key] = take === "theirs" ? theirs[key] : mine[key];
+    const chosen = take === "theirs" ? theirsWhen : mineWhen;
+    if(chosen != null) at[key] = chosen;
+  }
+  out.at = at;
+  out.t = Math.max(mine.t || 0, theirs.t || 0);
+  return out;
+}
+
+/** Stamp only the settings that actually changed, so a merge can tell them apart. */
+function stampSettings(previous, next){
+  const now = Date.now();
+  const at = Object.assign({}, previous.at || {});
+  for(const key of Object.keys(next)){
+    if(key === "at" || key === "t") continue;
+    if(JSON.stringify(previous[key]) !== JSON.stringify(next[key])) at[key] = now;
+  }
+  return Object.assign({}, previous, next, { at, t: now });
 }
 
 function mergeStores(a, b){
@@ -873,6 +985,7 @@ function mergeStores(a, b){
     days: {},
     locks: {},
     payments: {},
+    rates: {},
   };
   const ad = a.days || {}, bd = b.days || {};
   for(const k of new Set([...Object.keys(ad), ...Object.keys(bd)])){
@@ -899,6 +1012,13 @@ function mergeStores(a, b){
     if(!x){ out.payments[k] = y; continue; }
     if(!y){ out.payments[k] = x; continue; }
     out.payments[k] = (y.t || 0) > (x.t || 0) ? y : x;
+  }
+  const ar = a.rates || {}, br = b.rates || {};
+  for(const k of new Set([...Object.keys(ar), ...Object.keys(br)])){
+    const x = ar[k], y = br[k];
+    if(!x){ out.rates[k] = y; continue; }
+    if(!y){ out.rates[k] = x; continue; }
+    out.rates[k] = (y.t || 0) > (x.t || 0) ? y : x;
   }
   return out;
 }
@@ -1086,6 +1206,7 @@ const monthsAhead = (y, m) => {
   return (y - n.getFullYear()) * 12 + (m - n.getMonth());
 };
 
+const ICON_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 12h12"/></svg>';
 const STATE_WORDS = { yes: "delivered", skip: "not delivered", away: "away",
   off: "vendor off", none: "not recorded" };
 
@@ -1154,8 +1275,12 @@ function writePayment(id, entry){
 }
 
 function addPayment(){
-  const amount = Math.round(parseFloat($("pAmount").value || "0") * 100);
-  if(!(amount > 0)){ $("pAmount").focus(); return; }
+  const raw = $("pAmount").value.trim();
+  const amount = Math.round(parseFloat(raw) * 100);
+  if(!(amount > 0)){
+    $("pAmount").focus();
+    return toast(raw === "" ? "Enter an amount first" : "That is not an amount I can record");
+  }
   const on = $("pOn").value || today();
   const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   writePayment(id, { on, a: amount, note: $("pNote").value.trim().slice(0, 60), t: Date.now(), del: false });
@@ -1168,15 +1293,15 @@ function addPayment(){
 /* Removed, not deleted. A missing key does not travel over a merge — the other
    phone would still hold the payment and hand it straight back on the next
    sync, so the removal has to be something the book says rather than something
-   it stops saying. */
+   it stops saying.
+
+   Month locks deliberately do not apply here. They guard the delivery calendar
+   against a stray thumb; a payment is a separate ledger, every change to it is
+   deliberate and undoable, and applying the lock to removal but not to adding
+   trapped payments in closed months with no way to take them out again. */
 function removePayment(id){
   const p = store.payments[id];
   if(!p) return;
-  const closed = !store.settings.fullControl && dayLocked(store, p.on, today());
-  if(closed){
-    const d = parseYmd(p.on);
-    return toast(`${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed — unlock it first`);
-  }
   writePayment(id, Object.assign({}, p, { del: true, t: Date.now() }));
   toast("Payment removed",
     () => { writePayment(id, Object.assign({}, store.payments[id], { del: false, t: Date.now() }));
@@ -1247,19 +1372,45 @@ function render(){  const tk = today();
     const future = key > tk, pre = key < store.settings.startDate;
     btn.className = "day " + info.state + (future ? " future" : "") + (pre ? " pre" : "")
       + (lock.locked ? " locked" : "") + (key === tk ? " today" : "");
-    const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS : info.state === "away" ? ICON_AWAY : "";
+    const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS
+      : info.state === "away" ? ICON_AWAY : info.state === "off" ? ICON_OFF : "";
     btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` +
       (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
     btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${STATE_WORDS[info.state] || info.state}`
       + (future ? " (planned)" : "") + (lock.locked ? " (locked)" : "")
       + (pre ? " (before this book starts)" : ""));
     {
+      /* Marking a day runs on `click`, not on `pointerup`.
+
+         Two things were wrong with listening for the pointer directly. A
+         keyboard or screen reader never sends one, so the calendar — the whole
+         point of the app — could not be operated at all without a touchscreen
+         or mouse. And `pointerup` fires on whatever is under the pointer when
+         it is released, so pressing the 3rd, dragging across the month and
+         letting go over the 20th silently marked the 20th. That is a wrong
+         entry in a record somebody bills from.
+
+         `click` fixes both: the browser only fires it when press and release
+         land on the same element, and it is what Enter and Space produce. */
       let held = false, timer = 0;
-      btn.addEventListener("pointerdown", () => { held = false; timer = setTimeout(() => { held = true; openDay(key); }, 450); });
       const cancel = () => clearTimeout(timer);
-      btn.addEventListener("pointerup", () => { cancel(); if(!held) cycle(key); });
+      btn.addEventListener("pointerdown", () => {
+        held = false;
+        timer = setTimeout(() => { held = true; openDay(key); }, 450);
+      });
+      btn.addEventListener("pointerup", cancel);
       btn.addEventListener("pointerleave", cancel);
       btn.addEventListener("pointercancel", cancel);
+      btn.addEventListener("click", () => {
+        cancel();
+        // A long press has already opened the day; the click that follows it
+        // must not then also cycle it.
+        if(held){ held = false; return; }
+        cycle(key);
+      });
+      // Long press is a touch idiom with no keyboard equivalent, and right
+      // click did nothing at all on a desktop. Both now open the day.
+      btn.addEventListener("contextmenu", e => { e.preventDefault(); cancel(); held = true; openDay(key); });
     }
     g.appendChild(btn);
   }
@@ -1312,12 +1463,14 @@ function extendStartTo(key){
   const d = parseYmd(key);
   const newStart = keyOf(d.getFullYear(), d.getMonth(), 1);
   const oldStart = store.settings.startDate;
-  if(newStart >= oldStart) return 0;
+  if(!DAY_RE.test(oldStart || "") || newStart >= oldStart) return 0;
   let filled = 0;
-  for(let k = newStart; k < oldStart; k = addDays(k, 1)){
+  // Bounded: a mistyped year would otherwise write for centuries, on the phone,
+  // before anything on screen changed.
+  for(let k = newStart, guard = 0; k < oldStart && guard < MAX_FILL_DAYS; k = addDays(k, 1), guard++){
     if(!store.days[k]){ writeDay(k, "none", null); filled++; }
   }
-  store.settings = Object.assign({}, store.settings, { startDate: newStart, t: Date.now() });
+  store.settings = stampSettings(store.settings, { startDate: newStart });
   saveStore(store);
   queueSync();
   return filled;
@@ -1391,14 +1544,44 @@ function setMonthLock(y, m, on){
 }
 
 /* ---------------- sheets ---------------- */
-let openSheet = null;
+/* Sheets behave like dialogs, not like divs that happen to slide up.
+
+   A closed sheet is still in the page, so without inert it kept every control
+   inside it in the tab order: tabbing from the calendar walked through eight
+   invisible forms. And an open one had no way out from the keyboard at all. */
+let openSheet = null, returnFocusTo = null;
 function sheet(id){
-  if(openSheet) $(openSheet).classList.remove("on");
+  if(openSheet){
+    const prev = $(openSheet);
+    prev.classList.remove("on");
+    prev.setAttribute("inert", "");
+    prev.setAttribute("aria-hidden", "true");
+  }
   openSheet = id;
-  if(id){ $(id).classList.add("on"); $("scrim").classList.add("on"); }
-  else $("scrim").classList.remove("on");
+  if(id){
+    const el = $(id);
+    returnFocusTo = document.activeElement;
+    el.removeAttribute("inert");
+    el.removeAttribute("aria-hidden");
+    el.classList.add("on");
+    $("scrim").classList.add("on");
+    const first = el.querySelector("input, select, textarea, button");
+    if(first) setTimeout(() => first.focus({ preventScroll: true }), 60);
+  } else {
+    $("scrim").classList.remove("on");
+    if(returnFocusTo && returnFocusTo.focus) returnFocusTo.focus({ preventScroll: true });
+    returnFocusTo = null;
+  }
 }
 $("scrim").addEventListener("click", () => sheet(null));
+addEventListener("keydown", e => { if(e.key === "Escape" && openSheet) sheet(null); });
+// Every sheet starts closed, so every sheet starts out of the way.
+for(const el of document.querySelectorAll(".sheet")){
+  el.setAttribute("inert", "");
+  el.setAttribute("aria-hidden", "true");
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+}
 
 /**
  * Asking before something irreversible.
@@ -1507,13 +1690,21 @@ $("btnSettings").addEventListener("click", openSettings);
  * months of history and the bills that came from it. Settling those days into
  * explicit records first means the new rule only ever applies from here on.
  */
+/* Write down what every past day currently means, before a setting changes what
+   it would mean. The litres are frozen too, not just the state: a day that took
+   the default quantity would otherwise be re-billed at the new one. */
 function settleHistory(){
   const tk = today();
   let key = store.settings.startDate, settled = 0;
-  for(let guard = 0; key <= tk && guard < 4000; guard++){
-    if(!store.days[key]){
-      const info = dayInfo(store, key);
-      writeDay(key, info.state, info.custom ? info.qtyMl : null);
+  if(!DAY_RE.test(key || "")) return 0;
+  for(let guard = 0; key <= tk && guard < MAX_FILL_DAYS; guard++){
+    const existing = store.days[key];
+    const info = dayInfo(store, key);
+    if(!existing){
+      writeDay(key, info.state, info.state === "yes" ? info.qtyMl : null);
+      settled++;
+    } else if(existing.s === "yes" && existing.q == null){
+      writeDay(key, "yes", info.qtyMl);
       settled++;
     }
     key = addDays(key, 1);
@@ -1521,19 +1712,38 @@ function settleHistory(){
   return settled;
 }
 
-function applySettings(next, keepHistory){
+/* The settings sheet can move the start date backwards too, and used to do it
+   without the fill the calendar's reach-back performs — so months appeared in
+   the book already billed at whatever the default happened to be. */
+function fillBackTo(newStart){
+  if(!DAY_RE.test(newStart || "")) return 0;
+  let filled = 0, key = newStart;
+  for(let guard = 0; key < today() && guard < MAX_FILL_DAYS; guard++){
+    if(!store.days[key]){ writeDay(key, "none", null); filled++; }
+    key = addDays(key, 1);
+  }
+  saveStore(store);
+  return filled;
+}
+
+function applySettings(next, keepHistory, after){
   if(keepHistory) settleHistory();
-  store.settings = Object.assign(store.settings, next, { t: Date.now() });
+  store.settings = stampSettings(store.settings, next);
+  if(after) after();
   saveStore(store); queueSync(); render(); sheet(null); toast("Saved");
 }
 
 $("saveSettings").addEventListener("click", () => {
-  const qty = Math.max(0, Math.round(parseFloat($("fQty").value || "0") * 1000));
-  const rate = Math.max(0, Math.round(parseFloat($("fRate").value || "0") * 100));
+  const rawQty = $("fQty").value.trim(), rawRate = $("fRate").value.trim();
+  // A blank field is a half-finished edit, not an instruction to charge nothing.
+  // Zeroing the rate used to restate the whole book as free, with no undo.
+  const qty = rawQty === "" ? store.settings.qtyMl
+    : clampQty(parseFloat(rawQty) * 1000) || store.settings.qtyMl;
+  const rate = rawRate === "" ? Number(store.settings.rateMinor) || 0
+    : clampRate(parseFloat(rawRate) * 100);
   const next = {
-    t: Date.now(),
     vendor: $("fVendor").value.trim().slice(0, 60),
-    qtyMl: qty || 1000,
+    qtyMl: qty,
     rateMinor: rate,
     currency: $("fCur").value,
     startDate: $("fStart").value || store.settings.startDate,
@@ -1545,14 +1755,44 @@ $("saveSettings").addEventListener("click", () => {
   };
 
   const was = store.settings;
-  const rewritesThePast = next.defaultState !== (was.defaultState || "yes")
+  const rateChanged = Number(next.rateMinor) !== Number(was.rateMinor || 0);
+  const readingChanged = next.defaultState !== (was.defaultState || "yes")
     || String(next.skipWeekly) !== String(was.skipWeekly || []);
-  if(!rewritesThePast) return applySettings(next, false);
+  const qtyChanged = Number(next.qtyMl) !== Number(was.qtyMl || 0);
+  const startMovedBack = next.startDate < (was.startDate || next.startDate);
+
+  // A price change is its own question, because the honest answer is usually
+  // "from now on" rather than "and also every bill I have already sent".
+  if(rateChanged && Object.keys(store.days).length){
+    return ask("When does the new price start?",
+      `Bills already sent were worked out at ${fmtMoney(was.rateMinor || 0, was.currency)} a litre. `
+      + `Starting the new price from today leaves those exactly as they were; applying it to the `
+      + `whole book restates every month you have ever billed.`,
+      "From today onwards",
+      () => {
+        const from = today();
+        store.rates = store.rates || {};
+        // The old price has to be written down as well as the new one. Without a
+        // baseline, every day before this change falls through to the current
+        // rate in settings -- which is the new one -- and the whole history is
+        // restated anyway, which is precisely what this choice is refusing.
+        const base = store.settings.startDate;
+        if(DAY_RE.test(base || "") && !store.rates[base] && base < from)
+          store.rates[base] = { r: Number(was.rateMinor) || 0, t: Date.now() };
+        store.rates[from] = { r: next.rateMinor, t: Date.now() };
+        applySettings(next, readingChanged);
+      },
+      false,
+      { label: "Apply to the whole book", run: () => { store.rates = {}; applySettings(next, readingChanged); } });
+  }
+
+  if(startMovedBack) return applySettings(next, true, () => fillBackTo(next.startDate));
+  if(!readingChanged && !qtyChanged) return applySettings(next, false);
 
   ask("This changes what past days mean",
     "Days you actually marked are safe either way. The question is the days nobody "
-    + "touched: until now they were read one way, and the new setting reads them another. "
-    + "That would move bills you have already sent.",
+    + "touched, and the litres a day nobody changed: until now they were read one way, "
+    + "and the new setting reads them another. That would move bills you have already sent.",
     "Keep past months as they are",
     () => applySettings(next, true),
     false,
@@ -1560,14 +1800,14 @@ $("saveSettings").addEventListener("click", () => {
 });
 $("btnLocal").addEventListener("click", downloadLocalCopy);
 $("fullOff").addEventListener("click", () => {
-  store.settings = Object.assign({}, store.settings, { fullControl: false, t: Date.now() });
+  store.settings = stampSettings(store.settings, { fullControl: false });
   saveStore(store); queueSync(); render(); toast("Full control off");
 });
 $("btnReset").addEventListener("click", () => {  ask("Erase everything?",
     "Every day you have recorded on this device will be deleted. This cannot be undone, "
     + "and if you are syncing, the other phones still hold their copy.",
     "Erase all data",
-    () => { store = freshStore(); saveStore(store); render(); toast("Erased"); },
+    () => { store = freshStore(); saveStore(store); render(); renderSync(); toast("Erased"); },
     true);
 });
 
@@ -1601,7 +1841,7 @@ $("dSave").addEventListener("click", () => {
   const blocked = editBlocked(editKey);
   if(blocked === BEFORE_START){ sheet(null); return offerToReachBack(editKey); }
   if(blocked){ sheet(null); return toast(blocked); }
-  const q = Math.max(0, Math.round(parseFloat($("dQty").value || "0") * 1000));
+  const q = clampQty(parseFloat($("dQty").value || "0") * 1000);
   const state = editState;
   sheet(null);
   withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null), "Updated");
@@ -1650,10 +1890,15 @@ function renderRangeCount(){
   const el = $("aCount");
   if(!r){ el.textContent = "Pick both dates."; return; }
   const word = STATE_WORDS[rangeState] || rangeState;
+  // "Closed" is only half the story: a day can also sit before the book began.
+  const closed = r.locked.filter(k => editBlocked(k) !== BEFORE_START).length;
+  const outside = r.locked.length - closed;
+  const skipped = [closed ? `${closed} in closed months` : "",
+                   outside ? `${outside} before the book starts` : ""].filter(Boolean).join(" and ");
   el.textContent = r.keys.length
     ? `${r.keys.length} day${r.keys.length === 1 ? "" : "s"} will be marked ${word}`
-      + (r.locked.length ? ` \u00b7 ${r.locked.length} left alone, in closed months` : "")
-    : r.locked.length ? "Every day in that range is in a closed month." : "That range has no days.";
+      + (skipped ? ` \u00b7 ${skipped} left alone` : "")
+    : r.locked.length ? `Every day in that range is ${skipped}.` : "That range has no days.";
 }
 
 function applyRange(state){
@@ -1661,7 +1906,7 @@ function applyRange(state){
   if(!r) return toast("Pick both dates");
   sheet(null);
   if(!r.keys.length)
-    return toast(r.locked.length ? "Those days are all in closed months" : "That range has no days");
+    return toast(r.locked.length ? "Those days cannot be changed from here" : "That range has no days");
   const word = STATE_WORDS[state] || state;
   const skipped = r.locked.length ? ` \u00b7 ${r.locked.length} skipped, closed` : "";
   withUndo(r.keys, () => { for(const k of r.keys) writeDay(k, state, null); },
@@ -1791,30 +2036,58 @@ function parseCode(input){
   return { code: raw.slice(0, 4) + "-" + raw.slice(4, 8) + "-" + raw.slice(8, 12) };
 }
 
-let syncTimer = 0, syncing = false;
+let syncTimer = 0, syncing = false, syncPending = false;
 function queueSync(){
   if(!store.sync) return;
+  // An edit made while a sync is already in flight used to be dropped: the
+  // early return in doSync swallowed it, and nothing pushed it afterwards, so
+  // the change sat on one phone until somebody happened to edit again.
+  if(syncing){ syncPending = true; return; }
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => doSync(true), 1200);
 }
 async function doSync(quiet){
-  if(!store.sync || syncing) return;
+  if(!store.sync) return;
+  if(syncing){
+    syncPending = true;
+    // Pressing Sync now and getting no answer at all is worse than being told
+    // to wait, so a second press says something instead of dying quietly.
+    if(!quiet) toast("Already syncing\u2026");
+    return;
+  }
   syncing = true;
+  /* A phone on a captive portal, or on a bar of signal in a lift, leaves fetch
+     hanging with no error and no end. That left `syncing` stuck on for the rest
+     of the session: every later sync returned at the first line, the button did
+     nothing, and no message ever appeared. Sync has to be able to give up. */
+  const ctl = new AbortController();
+  const bell = setTimeout(() => ctl.abort(), 15000);
   try{
     const res = await fetch(`${API}/api/store/${encodeURIComponent(store.sync)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings: store.settings, days: store.days, locks: store.locks || {} }),
+      body: JSON.stringify({ settings: store.settings, days: store.days,
+                             locks: store.locks || {}, payments: store.payments || {},
+                             rates: store.rates || {} }),
+      signal: ctl.signal,
     });
     if(!res.ok) throw new Error("http " + res.status);
     const remote = await res.json();
     const merged = mergeStores(store, remote);
-    store.settings = merged.settings; store.days = merged.days; store.locks = merged.locks;
+    store.settings = merged.settings; store.days = merged.days;
+    store.locks = merged.locks; store.payments = merged.payments;
+    store.rates = merged.rates;
     saveStore(store); render();
+    if(openSheet === "shPay") renderPayments();   // the sheet in front of you is not exempt
+    if(openSheet === "shSync") renderSync();
     if(!quiet) toast("Synced");
   }catch(e){
     if(!quiet) toast("Sync unavailable \u2014 your data is safe on this device");
-  }finally{ syncing = false; }
+  }finally{
+    clearTimeout(bell);
+    syncing = false;
+    if(syncPending){ syncPending = false; queueSync(); }
+  }
 }
 function renderSync(){
   const on = !!store.sync;
