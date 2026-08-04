@@ -237,9 +237,14 @@ ok("a whole section this build never heard of is kept",
    _clean.get("unknownSection") == {"x": 1})
 ok("the fields it does know are still cleaned",
    _clean["settings"]["vendor"] == "Dairy")
+# The cap is on how much *unknown* data is carried; the sections this build
+# knows about are always there. Derived rather than typed in, because adding a
+# section is exactly when a hand-written number goes stale.
+_junk = M.sanitise({"settings": {}, **{f"junk{i}": i for i in range(200)}})
 ok("carried-through data is bounded",
-   len(M.sanitise({"settings": {}, **{f"junk{i}": i for i in range(200)}})) <= 23,
-   str(len(M.sanitise({"settings": {}, **{f"junk{i}": i for i in range(200)}}))))
+   len(_junk) <= len(M.KNOWN_TOP) + 20, f"{len(_junk)} keys, {len(M.KNOWN_TOP)} known")
+ok("and the known sections are all still there",
+   M.KNOWN_TOP <= set(_junk), str(M.KNOWN_TOP - set(_junk)))
 ok("an oversized unknown field is not carried",
    "big" not in M.sanitise({"settings": {}, "big": "x" * 9000}))
 
@@ -357,6 +362,51 @@ for year, month, today in [(2026, 6, "2026-06-30"), (2026, 6, "2026-06-12"), (20
 with open(Path(__file__).resolve().parent / ".fixture.json", "w") as fh:
     json.dump(fixture, fh)
 print("\n  wrote .fixture.json for the client cross-check")
+
+print("\nPAYMENTS — money handed over is its own ledger")
+# Two payments on one day are two payments, so they are keyed by id and merged
+# one at a time. A whole-object merge would lose one of them the first time two
+# people in a household both recorded something.
+_pay = M.sanitise({"settings": {}, "days": {}, "payments": {
+    "p1": {"on": "2026-01-20", "a": 5000, "note": "cash", "t": 3},
+    "p2": {"on": "2026-01-20", "a": 3000, "t": 4},
+}})
+ok("payments are stored", len(_pay["payments"]) == 2, str(_pay["payments"]))
+ok("the amount is kept as whole minor units", _pay["payments"]["p1"]["a"] == 5000)
+ok("the note survives", _pay["payments"]["p1"]["note"] == "cash")
+ok("a missing note becomes empty rather than None", _pay["payments"]["p2"]["note"] == "")
+ok("the tombstone field is always present", _pay["payments"]["p1"]["del"] is False)
+
+_bad = M.sanitise({"settings": {}, "payments": {
+    "ok1": {"on": "2026-01-20", "a": 100},
+    "no date": {"on": "", "a": 100},
+    "bad$id": {"on": "2026-01-20", "a": 100},
+    "negative": {"on": "2026-01-20", "a": -500},
+    "notadict": "nope",
+}})
+ok("a payment with no usable date is dropped", "no date" not in _bad["payments"])
+ok("an id that is not an id is dropped", "bad$id" not in _bad["payments"])
+ok("a negative amount is clamped, not stored", _bad["payments"]["negative"]["a"] == 0)
+ok("something that is not an object is dropped", "notadict" not in _bad["payments"])
+ok("the good one still gets through", "ok1" in _bad["payments"])
+
+_a = {"settings": {"t": 1}, "days": {}, "payments": {"p1": {"on": "2026-01-05", "a": 5000, "t": 10}}}
+_b = {"settings": {"t": 1}, "days": {}, "payments": {"p2": {"on": "2026-01-05", "a": 3000, "t": 11}}}
+ok("two phones' payments both survive a merge", len(M.merge(_a, _b)["payments"]) == 2)
+
+_older = {"settings": {"t": 1}, "days": {}, "payments": {"p1": {"on": "2026-01-05", "a": 5000, "t": 10}}}
+_newer = {"settings": {"t": 1}, "days": {}, "payments": {"p1": {"on": "2026-01-05", "a": 5500, "t": 20}}}
+ok("the newer edit of one payment wins", M.merge(_older, _newer)["payments"]["p1"]["a"] == 5500)
+
+_gone = {"settings": {"t": 1}, "days": {}, "payments": {"p1": {"on": "2026-01-05", "a": 5000, "t": 30, "del": True}}}
+ok("a removal travels rather than being undone by the other copy",
+   M.merge(_older, _gone)["payments"]["p1"]["del"] is True)
+
+# A phone still running the previous build sends no payments key at all.
+_old_client = {"settings": {"t": 2}, "days": {}}
+ok("a client that has never heard of payments does not erase them",
+   len(M.merge(_a, _old_client)["payments"]) == 1,
+   "clients ship before servers, and old clients outlive both")
 
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

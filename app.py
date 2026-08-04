@@ -32,6 +32,8 @@ DEFAULT_STATES = {"yes", "skip", "none"}
 MAX_BODY = 512 * 1024
 MAX_DAYS = 20_000
 MAX_MONTHS = 1_200
+MAX_PAYMENTS = 20_000
+PAYMENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 RATE_LIMIT = 90          # requests
 RATE_WINDOW = 60         # seconds
 
@@ -107,7 +109,7 @@ def _carry_unknown(raw: dict, known: set) -> dict:
 
 KNOWN_SETTINGS = {"t", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
                   "skipWeekly", "lockAfterDays", "defaultState"}
-KNOWN_TOP = {"settings", "days", "locks"}
+KNOWN_TOP = {"settings", "days", "locks", "payments"}
 
 
 def sanitise(book: dict) -> dict:
@@ -163,7 +165,32 @@ def sanitise(book: dict) -> dict:
                 continue
             locks[key] = {"on": bool(entry.get("on")), "t": int(entry.get("t") or 0)}
 
-    return {"settings": settings, "days": days, "locks": locks, **_carry_unknown(book, KNOWN_TOP)}
+    # Money handed over, kept as its own ledger rather than folded into a day.
+    # A payment is not a delivery: it has its own date, and two of them on the
+    # same day are two payments, so they are keyed by id and merged one at a
+    # time. A removed payment keeps a tombstone, because absence does not
+    # travel over a merge — the other phone would hand it straight back.
+    raw_payments = book.get("payments")
+    payments: dict = {}
+    if isinstance(raw_payments, dict):
+        if len(raw_payments) > MAX_PAYMENTS:
+            raise ValueError("too many payments")
+        for key, entry in raw_payments.items():
+            if not PAYMENT_ID_RE.match(key) or not isinstance(entry, dict):
+                continue
+            on = str(entry.get("on") or "")[:10]
+            if not DAY_RE.match(on):
+                continue
+            payments[key] = {
+                "on": on,
+                "a": max(0, min(int(entry.get("a") or 0), 1_000_000_000)),
+                "note": str(entry.get("note") or "")[:60],
+                "t": int(entry.get("t") or 0),
+                "del": bool(entry.get("del")),
+            }
+
+    return {"settings": settings, "days": days, "locks": locks, "payments": payments,
+            **_carry_unknown(book, KNOWN_TOP)}
 
 
 def merge(a: dict, b: dict) -> dict:
@@ -190,6 +217,7 @@ def merge(a: dict, b: dict) -> dict:
         "settings": settings,
         "days": newest(a.get("days") or {}, b.get("days") or {}),
         "locks": newest(a.get("locks") or {}, b.get("locks") or {}),
+        "payments": newest(a.get("payments") or {}, b.get("payments") or {}),
         **_carry_unknown(a, KNOWN_TOP),
         **_carry_unknown(b, KNOWN_TOP),
     }
