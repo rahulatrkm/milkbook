@@ -121,6 +121,39 @@
   .legend i{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--text-3); font-style:normal}
   .dot{width:9px; height:9px; border-radius:3px; flex:none}
 
+  /* ---------- running balance ---------- */
+  .balance{display:flex; align-items:center; gap:14px; width:100%; padding:14px 16px;
+    margin-bottom:12px; text-align:left; transition:background .14s}
+  .balance:hover{background:var(--raised)}
+  .bal-main{flex:1; min-width:0}
+  .bal-label{display:block; font-size:11.5px; font-weight:600; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--text-3)}
+  .bal-amount{display:block; font-size:23px; font-weight:600; letter-spacing:-.02em;
+    line-height:1.15; margin-top:2px}
+  .balance.owing .bal-amount{color:var(--warn)}
+  .balance.credit .bal-amount{color:var(--good)}
+  .bal-side{display:flex; flex-direction:column; gap:2px; flex:none}
+  .bal-line{display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+    font-size:12px; color:var(--text-3)}
+  .bal-line b{font-weight:600; color:var(--text-2)}
+  .balance .chev{width:15px; height:15px; color:var(--line-2); flex:none}
+
+  /* ---------- payments ---------- */
+  .pay{display:flex; align-items:center; gap:10px; padding:11px 0; border-bottom:1px solid var(--line)}
+  .pay:last-child{border-bottom:0}
+  .pay .who{flex:1; min-width:0}
+  .pay .who b{display:block; font-size:14px; font-weight:600}
+  .pay .who span{display:block; font-size:12px; color:var(--text-3); margin-top:1px}
+  .pay .amt{font-weight:600; font-size:14.5px; flex:none}
+  .pay .x{width:28px; height:28px; border-radius:8px; display:grid; place-items:center;
+    color:var(--text-3); flex:none}
+  .pay .x:hover{background:var(--raised); color:var(--bad)}
+  .pay .x svg{width:14px; height:14px}
+  .payrow{display:flex; gap:8px; align-items:flex-end}
+  .payrow > *{flex:1; min-width:0}
+  .payrow > .go{flex:none}
+  .empty{color:var(--text-3); font-size:13.5px; text-align:center; padding:16px 0}
+
   /* ---------- rows ---------- */
   .rows{overflow:hidden}
   .row{display:flex; align-items:center; gap:12px; width:100%; padding:13px 16px; text-align:left;
@@ -200,6 +233,51 @@
   .fab button:hover{background:var(--raised); color:var(--text)}
   .fab svg{width:16px; height:16px}
 
+  /* ---------- wider screens ----------
+
+     A phone gets one column, which is right. A tablet given the same 520px
+     column is mostly empty margin with the calendar squeezed into the middle of
+     it, so from here the calendar takes the space it deserves and everything
+     that is not the calendar moves alongside it. Nothing is hidden or added at
+     any width — the same markup, arranged for the room available. */
+  @media (min-width: 700px){
+    header{max-width:940px; padding-top:max(20px,env(safe-area-inset-top))}
+    .wrap{
+      max-width:940px;
+      display:grid; grid-template-columns:minmax(0,1fr) minmax(230px,300px);
+      gap:0 20px; align-content:start;
+      padding-bottom:calc(120px + env(safe-area-inset-bottom));
+    }
+    /* The calendar is the thing you came to look at, so it keeps the wide side.
+       The balance and the actions stack down the other one rather than leaving
+       a tall empty column beside a squeezed list. */
+    .summary{grid-column:1; grid-row:1}
+    .cal{grid-column:1; grid-row:2}
+    .balance{grid-column:2; grid-row:1; align-self:start}
+    .rows{grid-column:2; grid-row:2; align-self:start}
+    .cal{padding:16px 16px 18px}
+    .day .n{font-size:14px}
+    .day .m{width:18px; height:18px}
+    .amount{font-size:34px}
+    .bal-amount{font-size:27px}
+    /* Stacked in the side column there is room to breathe. */
+    .balance{flex-direction:column; align-items:stretch; gap:12px; padding:18px}
+    .bal-side{flex-direction:row; gap:18px}
+    .bal-line{flex-direction:column; gap:0}
+    .balance .chev{display:none}
+  }
+  @media (min-width: 1100px){
+    header, .wrap{max-width:1060px}
+    .wrap{grid-template-columns:minmax(0,1fr) 340px}
+  }
+
+  /* A finger is not a mouse: hover styling that sticks after a tap reads as a
+     stuck button, so it is only applied where hovering is actually possible. */
+  @media (hover: none){
+    .row:hover, .balance:hover, .iconbtn:hover, .navbtn:hover,
+    .lockchip:hover, .fab button:hover, .pay .x:hover{background:none}
+  }
+
   @media (prefers-reduced-motion: reduce){ *{transition-duration:.01ms!important} }
 </style>
 
@@ -275,6 +353,18 @@
       <button class="lockchip" id="btnLock">Lock month</button>
     </div>
   </div>
+
+  <button class="card balance" id="btnBalance" type="button">
+    <span class="bal-main">
+      <span class="bal-label" id="balLabel">Balance</span>
+      <span class="bal-amount num" id="balAmount">—</span>
+    </span>
+    <span class="bal-side">
+      <span class="bal-line"><span>Billed</span><b class="num" id="balBilled">—</b></span>
+      <span class="bal-line"><span>Paid</span><b class="num" id="balPaid">—</b></span>
+    </span>
+    <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+  </button>
 
   <div class="card cal">
     <div class="dow" id="dow"></div>
@@ -412,6 +502,33 @@
   <button class="btn sec" id="bLock" style="margin-top:8px">Lock this month</button>
 </div>
 
+<!-- payments and the running balance -->
+<div class="sheet" id="shPay">
+  <div class="grab"></div>
+  <h2>Balance</h2>
+  <p class="lede" id="pLede">Everything billed since you started, against everything you have paid.</p>
+  <div class="billtotal"><span>Billed so far</span><b class="num" id="pBilled">—</b></div>
+  <div class="billtotal"><span>Paid so far</span><b class="num" id="pPaid">—</b></div>
+  <div class="billtotal"><span id="pBalLabel">Remaining</span><b class="num" id="pBalance">—</b></div>
+
+  <div class="field" style="margin-top:18px">
+    <label for="pAmount">Record a payment</label>
+    <div class="payrow">
+      <input id="pAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" />
+      <input id="pOn" type="date" />
+      <button class="btn go" id="pAdd" style="width:auto; padding:11px 18px">Add</button>
+    </div>
+    <input id="pNote" type="text" maxlength="60" placeholder="Note — cash, UPI, transfer (optional)"
+           style="margin-top:8px" />
+    <p class="hint">Part payments are fine. The balance is simply everything billed minus everything paid.</p>
+  </div>
+
+  <div class="field">
+    <label>Payments</label>
+    <div id="pList"></div>
+  </div>
+</div>
+
 <!-- calendar -->
 <div class="sheet" id="shCal">
   <div class="grab"></div>
@@ -510,6 +627,7 @@ function freshStore(){
     },
     days: {},
     locks: {},
+    payments: {},
     sync: null,
   };
 }
@@ -523,6 +641,7 @@ function loadStore(){
     s.settings = Object.assign(f.settings, s.settings || {});
     s.days = s.days || {};
     s.locks = s.locks || {};
+    s.payments = s.payments || {};
     /* Closing the books used to be off unless you went looking for it, which is
        the wrong way round for a record people bill from. Books written before
        that changed are moved onto it once. `lockChoice` is set whenever the
@@ -700,6 +819,7 @@ function mergeStores(a, b){
     settings: mergeSettings(a.settings, b.settings),
     days: {},
     locks: {},
+    payments: {},
   };
   const ad = a.days || {}, bd = b.days || {};
   for(const k of new Set([...Object.keys(ad), ...Object.keys(bd)])){
@@ -717,7 +837,67 @@ function mergeStores(a, b){
     if(!y){ out.locks[k] = x; continue; }
     out.locks[k] = (y.t || 0) > (x.t || 0) ? y : x;
   }
+  // Payments are keyed by id, not by date, because two payments on one day are
+  // two payments. Merged one at a time so a phone that recorded cash this
+  // morning does not lose it to a phone that recorded a transfer this evening.
+  const ap = a.payments || {}, bp = b.payments || {};
+  for(const k of new Set([...Object.keys(ap), ...Object.keys(bp)])){
+    const x = ap[k], y = bp[k];
+    if(!x){ out.payments[k] = y; continue; }
+    if(!y){ out.payments[k] = x; continue; }
+    out.payments[k] = (y.t || 0) > (x.t || 0) ? y : x;
+  }
   return out;
+}
+
+/* ---------------- the running account ----------------
+
+   Months are totalled one at a time and then added up, rather than every litre
+   in the book being summed and multiplied once. Those two give different
+   answers by a paisa or so, and this one matches the bills the vendor actually
+   handed over, which is the number an argument would be about. */
+function billedTotalMinor(store, todayKey){
+  const start = store.settings.startDate;
+  if(!start) return 0;
+  const from = parseYmd(start), to = parseYmd(todayKey);
+  let total = 0;
+  let y = from.getFullYear(), m = from.getMonth();
+  while(y < to.getFullYear() || (y === to.getFullYear() && m <= to.getMonth())){
+    total += monthSummary(store, y, m, todayKey).amountMinor;
+    m++; if(m > 11){ m = 0; y++; }
+  }
+  return total;
+}
+
+const livePayments = store =>
+  Object.entries(store.payments || {})
+    .filter(([, p]) => p && !p.del)
+    .map(([id, p]) => Object.assign({ id }, p));
+
+function paidTotalMinor(store){
+  return livePayments(store).reduce((sum, p) => sum + (Number(p.a) || 0), 0);
+}
+
+/** Billed so far, paid so far, and which way the difference points. */
+function accountOf(store, todayKey){
+  const billedMinor = billedTotalMinor(store, todayKey);
+  const paidMinor = paidTotalMinor(store);
+  const balanceMinor = billedMinor - paidMinor;
+  return {
+    billedMinor, paidMinor, balanceMinor,
+    owing: balanceMinor > 0,
+    inCredit: balanceMinor < 0,
+    settled: balanceMinor === 0,
+    count: livePayments(store).length,
+  };
+}
+
+/** What has been paid against one month, by the date on the payment. */
+function paidInMonthMinor(store, y, m){
+  const prefix = monthKeyOf(y, m);
+  return livePayments(store)
+    .filter(p => String(p.on || "").slice(0, 7) === prefix)
+    .reduce((sum, p) => sum + (Number(p.a) || 0), 0);
 }
 
 const fmtMoney = (minor, code) => symbolOf(code) + (minor / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -856,8 +1036,101 @@ const monthsAhead = (y, m) => {
 const STATE_WORDS = { yes: "delivered", skip: "not delivered", away: "away",
   off: "vendor off", none: "not recorded" };
 
-function render(){
+/* The one number this is all for: what is still owed, across every month, not
+   just the one being looked at. */
+function renderBalance(tk){
+  const cur = store.settings.currency;
+  const acc = accountOf(store, tk);
+  const card = $("btnBalance");
+  card.className = "card balance" + (acc.owing ? " owing" : acc.inCredit ? " credit" : "");
+  $("balLabel").textContent = acc.owing ? "Balance due" : acc.inCredit ? "In credit" : "Balance";
+  $("balAmount").textContent = fmtMoney(Math.abs(acc.balanceMinor), cur);
+  $("balBilled").textContent = fmtMoney(acc.billedMinor, cur);
+  $("balPaid").textContent = fmtMoney(acc.paidMinor, cur);
+  card.setAttribute("aria-label",
+    (acc.owing ? `Balance due ${fmtMoney(acc.balanceMinor, cur)}`
+      : acc.inCredit ? `In credit ${fmtMoney(-acc.balanceMinor, cur)}`
+      : "Nothing outstanding")
+    + `. Billed ${fmtMoney(acc.billedMinor, cur)}, paid ${fmtMoney(acc.paidMinor, cur)}. Tap to record a payment.`);
+}
+
+const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function renderPayments(){
   const tk = today();
+  const cur = store.settings.currency;
+  const acc = accountOf(store, tk);
+  $("pBilled").textContent = fmtMoney(acc.billedMinor, cur);
+  $("pPaid").textContent = fmtMoney(acc.paidMinor, cur);
+  $("pBalLabel").textContent = acc.inCredit ? "In credit" : "Remaining";
+  $("pBalance").textContent = fmtMoney(Math.abs(acc.balanceMinor), cur);
+  $("pLede").textContent = acc.settled
+    ? "Everything billed so far has been paid."
+    : acc.inCredit
+      ? "You have paid ahead. This is the credit sitting with your vendor."
+      : "Everything billed since you started, against everything you have paid.";
+
+  const list = $("pList");
+  const items = livePayments(store).sort((a, b) => (b.on || "").localeCompare(a.on || ""));
+  if(!items.length){
+    list.innerHTML = `<div class="empty">No payments recorded yet.</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  for(const p of items){
+    const row = document.createElement("div");
+    row.className = "pay";
+    const when = parseYmd(p.on);
+    row.innerHTML = `<span class="who"><b>${fmtMoney(p.a, cur)}</b>`
+      + `<span>${when.getDate()} ${MONTHS[when.getMonth()].slice(0,3)} ${when.getFullYear()}`
+      + `${p.note ? " \u00b7 " + esc(p.note) : ""}</span></span>`
+      + `<button class="x" aria-label="Remove this payment">${ICON_X}</button>`;
+    row.querySelector(".x").addEventListener("click", () => removePayment(p.id));
+    list.appendChild(row);
+  }
+}
+
+function writePayment(id, entry){
+  store.payments[id] = entry;
+  saveStore(store);
+  queueSync();
+  render();
+  renderPayments();
+}
+
+function addPayment(){
+  const amount = Math.round(parseFloat($("pAmount").value || "0") * 100);
+  if(!(amount > 0)){ $("pAmount").focus(); return; }
+  const on = $("pOn").value || today();
+  const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  writePayment(id, { on, a: amount, note: $("pNote").value.trim().slice(0, 60), t: Date.now(), del: false });
+  $("pAmount").value = ""; $("pNote").value = "";
+  toast(`${fmtMoney(amount, store.settings.currency)} recorded`,
+    () => { writePayment(id, Object.assign({}, store.payments[id], { del: true, t: Date.now() }));
+            toast("Payment removed"); });
+}
+
+/* Removed, not deleted. A missing key does not travel over a merge — the other
+   phone would still hold the payment and hand it straight back on the next
+   sync, so the removal has to be something the book says rather than something
+   it stops saying. */
+function removePayment(id){
+  const p = store.payments[id];
+  if(!p) return;
+  const closed = dayLocked(store, p.on, today());
+  if(closed){
+    const d = parseYmd(p.on);
+    return toast(`${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed — unlock it first`);
+  }
+  writePayment(id, Object.assign({}, p, { del: true, t: Date.now() }));
+  toast("Payment removed",
+    () => { writePayment(id, Object.assign({}, store.payments[id], { del: false, t: Date.now() }));
+            toast("Payment restored"); });
+}
+
+function render(){  const tk = today();
   $("mLabel").textContent = MONTHS[viewM].slice(0, 3) + " " + viewY;
   const ahead = monthsAhead(viewY, viewM);
   $("nextM").disabled = ahead >= FUTURE_MONTHS;
@@ -896,6 +1169,8 @@ function render(){
   }
 
   $("legendNone").classList.toggle("hide", store.settings.defaultState !== "none" && !s.pending);
+
+  renderBalance(tk);
 
   const g = $("grid"); g.innerHTML = "";
   const firstDow = new Date(viewY, viewM, 1).getDay();
@@ -1237,8 +1512,16 @@ $("aApply").addEventListener("click", () => applyRange("away"));
 $("aClear").addEventListener("click", () => applyRange("yes"));
 
 /* bill */
-$("btnBill").addEventListener("click", () => {
-  const tk = today();
+$("btnBalance").addEventListener("click", () => {
+  $("pOn").value = today();
+  renderPayments();
+  sheet("shPay");
+});
+$("pAdd").addEventListener("click", addPayment);
+$("pAmount").addEventListener("keydown", e => { if(e.key === "Enter") addPayment(); });
+$("pNote").addEventListener("keydown", e => { if(e.key === "Enter") addPayment(); });
+
+$("btnBill").addEventListener("click", () => {  const tk = today();
   const s = monthSummary(store, viewY, viewM, tk);
   const cur = store.settings.currency;
   $("bTitle").textContent = `Bill \u2014 ${MONTHS[viewM]} ${viewY}`;
