@@ -48,6 +48,10 @@
     display:flex; flex-direction:column; align-items:center;
   }
   .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum"}
+  /* A class that sets display beats the browser's own [hidden] rule, so an
+     element with both stays on screen while every script believes it is gone.
+     That shipped once: the full-control banner sat on every book, permanently. */
+  [hidden]{display:none!important}
   button{font:inherit; color:inherit; border:0; background:none; cursor:pointer}
 
   .wrap{width:100%; max-width:520px; padding:0 16px calc(96px + env(safe-area-inset-bottom))}
@@ -126,10 +130,11 @@
      it after the explicitly positioned rows and it appeared under the calendar. */
   .fullbanner{width:100%; max-width:520px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     background:var(--warn-soft); border:1px solid var(--warn); border-radius:var(--radius);
-    padding:11px 14px; margin:0 0 12px; font-size:13.5px; color:var(--text-2)}
+    padding:9px 12px; margin:0 0 12px; font-size:13px; color:var(--text-2); line-height:1.35}
+  .fullbanner span{flex:1; min-width:0}
   .fullbanner b{color:var(--text)}
-  .fullbanner button{margin-left:auto; font-size:13px; font-weight:650; color:var(--warn);
-    border:1px solid currentColor; border-radius:999px; padding:4px 12px}
+  .fullbanner button{flex:none; font-size:12.5px; font-weight:650; color:var(--warn);
+    border:1px solid currentColor; border-radius:999px; padding:4px 11px}
   .balance{display:flex; align-items:center; gap:14px; width:100%; padding:14px 16px;
     margin-bottom:12px; text-align:left; transition:background .14s}
   .balance:hover{background:var(--raised)}
@@ -345,7 +350,7 @@
 </header>
 
 <div class="fullbanner" id="fullBanner" hidden>
-  <b>Full control is on.</b> Every month is open and any day can be changed.
+  <span><b>Full control is on.</b> Any day in any month can be changed.</span>
   <button type="button" id="fullOff">Turn off</button>
 </div>
 
