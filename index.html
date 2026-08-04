@@ -386,7 +386,7 @@
     </button>
     <button class="row" id="btnAway">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5a2.12 2.12 0 0 0-3-3L13 8 4.8 6.2a.5.5 0 0 0-.5.8l3.9 4.9-2 2H3.5a.5.5 0 0 0-.4.8l2 2.6 2.6 2a.5.5 0 0 0 .8-.4v-2.7l2-2 4.9 3.9a.5.5 0 0 0 .8-.5z"/></svg>
-      <span class="t"><b>Mark away</b><span>Pause delivery for a date range</span></span>
+      <span class="t"><b>Mark several days</b><span>Set a run of days in one go</span></span>
       <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
     </button>
     <button class="row" id="btnCal">
@@ -476,17 +476,21 @@
   <button class="btn" id="dSave">Save</button>
 </div>
 
-<!-- away range -->
+<!-- mark a run of days at once -->
 <div class="sheet" id="shAway">
   <div class="grab"></div>
-  <h2>Mark away</h2>
-  <p class="lede">No delivery between these dates. Nothing is billed for them.</p>
+  <h2>Mark several days</h2>
+  <p class="lede">For a holiday, a week you forgot to record, or a stretch that was all the same.</p>
   <div class="two">
     <div class="field"><label for="aFrom">From</label><input id="aFrom" type="date" /></div>
     <div class="field"><label for="aTo">To</label><input id="aTo" type="date" /></div>
   </div>
-  <button class="btn" id="aApply">Mark as away</button>
-  <button class="btn sec" id="aClear" style="margin-top:8px">Clear this range back to delivered</button>
+  <div class="field">
+    <label>Mark them all as</label>
+    <div class="chips" id="aStates"></div>
+  </div>
+  <p class="hint" id="aCount"></p>
+  <button class="btn" id="aApply">Mark these days</button>
 </div>
 
 <!-- bill -->
@@ -1490,26 +1494,65 @@ $("dSave").addEventListener("click", () => {
 $("btnAway").addEventListener("click", () => {
   const t = today();
   $("aFrom").value = t; $("aTo").value = t;
+  renderRange();
   sheet("shAway");
 });
-function applyRange(state){
+let rangeState = "yes";
+
+/** How many days the chosen range covers, and how many of them are closed. */
+function rangeKeys(){
   let from = $("aFrom").value, to = $("aTo").value;
-  if(!from || !to) return toast("Pick both dates");
+  if(!from || !to) return null;
   if(from > to){ const x = from; from = to; to = x; }
   const keys = [], locked = [];
   for(let k = from, n = 0; k <= to && n < 800; k = addDays(k, 1), n++){
     if(editBlocked(k)) locked.push(k); else keys.push(k);
   }
-  sheet(null);
-  if(!keys.length)
-    return toast(locked.length ? "Those days are all in locked months" : "That range has no days");
-  const word = state === "away" ? "away" : "delivered";
-  const skipped = locked.length ? ` \u00b7 ${locked.length} skipped, locked` : "";
-  withUndo(keys, () => { for(const k of keys) writeDay(k, state, null); },
-    `${keys.length} ${keys.length === 1 ? "day" : "days"} marked ${word}${skipped}`);
+  return { keys, locked };
 }
-$("aApply").addEventListener("click", () => applyRange("away"));
-$("aClear").addEventListener("click", () => applyRange("yes"));
+
+function renderRange(){
+  const w = $("aStates"); w.innerHTML = "";
+  for(const [val, label] of [["yes","Delivered"],["skip","Not delivered"],["away","Away"],["none","Not recorded"]]){
+    const c = document.createElement("button");
+    c.className = "chip" + (val === rangeState ? " on" : "");
+    c.textContent = label;
+    c.addEventListener("click", () => {
+      rangeState = val;
+      [...w.children].forEach(x => x.classList.toggle("on", x === c));
+      renderRangeCount();
+    });
+    w.appendChild(c);
+  }
+  renderRangeCount();
+}
+
+// Saying how many days will change, before anything changes.
+function renderRangeCount(){
+  const r = rangeKeys();
+  const el = $("aCount");
+  if(!r){ el.textContent = "Pick both dates."; return; }
+  const word = STATE_WORDS[rangeState] || rangeState;
+  el.textContent = r.keys.length
+    ? `${r.keys.length} day${r.keys.length === 1 ? "" : "s"} will be marked ${word}`
+      + (r.locked.length ? ` \u00b7 ${r.locked.length} left alone, in closed months` : "")
+    : r.locked.length ? "Every day in that range is in a closed month." : "That range has no days.";
+}
+
+function applyRange(state){
+  const r = rangeKeys();
+  if(!r) return toast("Pick both dates");
+  sheet(null);
+  if(!r.keys.length)
+    return toast(r.locked.length ? "Those days are all in closed months" : "That range has no days");
+  const word = STATE_WORDS[state] || state;
+  const skipped = r.locked.length ? ` \u00b7 ${r.locked.length} skipped, closed` : "";
+  withUndo(r.keys, () => { for(const k of r.keys) writeDay(k, state, null); },
+    `${r.keys.length} ${r.keys.length === 1 ? "day" : "days"} marked ${word}${skipped}`);
+}
+$("aApply").addEventListener("click", () => applyRange(rangeState));
+$("aFrom").addEventListener("change", renderRangeCount);
+$("aTo").addEventListener("change", renderRangeCount);
 
 /* bill */
 $("btnBalance").addEventListener("click", () => {
