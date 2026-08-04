@@ -102,7 +102,7 @@
   .day.none .n{color:var(--text-3)}
   .day.future{opacity:.55}
   .day.future .n{font-style:italic}
-  .day.pre{opacity:.28; pointer-events:none}
+  .day.pre{opacity:.34}
   .day.locked{opacity:.7}
   .day.locked::after{content:""; position:absolute; inset:0; border-radius:10px;
     background:repeating-linear-gradient(45deg,transparent,transparent 5px,rgba(123,131,152,.13) 5px,rgba(123,131,152,.13) 10px)}
@@ -122,6 +122,14 @@
   .dot{width:9px; height:9px; border-radius:3px; flex:none}
 
   /* ---------- running balance ---------- */
+  /* Deliberately outside the calendar grid: placed inside it, the browser put
+     it after the explicitly positioned rows and it appeared under the calendar. */
+  .fullbanner{width:100%; max-width:520px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--warn-soft); border:1px solid var(--warn); border-radius:var(--radius);
+    padding:11px 14px; margin:0 0 12px; font-size:13.5px; color:var(--text-2)}
+  .fullbanner b{color:var(--text)}
+  .fullbanner button{margin-left:auto; font-size:13px; font-weight:650; color:var(--warn);
+    border:1px solid currentColor; border-radius:999px; padding:4px 12px}
   .balance{display:flex; align-items:center; gap:14px; width:100%; padding:14px 16px;
     margin-bottom:12px; text-align:left; transition:background .14s}
   .balance:hover{background:var(--raised)}
@@ -242,6 +250,7 @@
      any width — the same markup, arranged for the room available. */
   @media (min-width: 700px){
     header{max-width:940px; padding-top:max(20px,env(safe-area-inset-top))}
+    .fullbanner{max-width:940px}
     .wrap{
       max-width:940px;
       display:grid; grid-template-columns:minmax(0,1fr) minmax(230px,300px);
@@ -268,6 +277,7 @@
   }
   @media (min-width: 1100px){
     header, .wrap{max-width:1060px}
+    .fullbanner{max-width:1060px}
     .wrap{grid-template-columns:minmax(0,1fr) 340px}
   }
 
@@ -333,6 +343,11 @@
     </svg>
   </button>
 </header>
+
+<div class="fullbanner" id="fullBanner" hidden>
+  <b>Full control is on.</b> Every month is open and any day can be changed.
+  <button type="button" id="fullOff">Turn off</button>
+</div>
 
 <div class="wrap">
   <div class="card summary">
@@ -445,6 +460,16 @@
       <option value="31">A month after a month ends</option>
     </select>
     <p class="hint">A closed month cannot be changed by a stray tap, on any phone sharing this book. You can always unlock one when you genuinely need to.</p>
+  </div>
+  <div class="field">
+    <label for="fFull">Full control</label>
+    <select id="fFull">
+      <option value="0">Normal — closed months are protected</option>
+      <option value="1">On — let me change any day, in any month</option>
+    </select>
+    <p class="hint">Turns off every lock at once, for whoever keeps the book. Nothing is hidden and nothing
+      is deleted — it only stops the book refusing you. A banner stays on screen while it is on, so it is
+      never on by accident.</p>
   </div>
   <div class="field">
     <label>Keep a copy on this device</label>
@@ -627,7 +652,7 @@ function freshStore(){
     settings: {
       t: Date.now(), vendor: "", qtyMl: 1000, rateMinor: 6000,
       currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
-      skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true,
+      skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true, fullControl: false,
     },
     days: {},
     locks: {},
@@ -1123,7 +1148,7 @@ function addPayment(){
 function removePayment(id){
   const p = store.payments[id];
   if(!p) return;
-  const closed = dayLocked(store, p.on, today());
+  const closed = !store.settings.fullControl && dayLocked(store, p.on, today());
   if(closed){
     const d = parseYmd(p.on);
     return toast(`${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed — unlock it first`);
@@ -1174,6 +1199,7 @@ function render(){  const tk = today();
 
   $("legendNone").classList.toggle("hide", store.settings.defaultState !== "none" && !s.pending);
 
+  $("fullBanner").hidden = !store.settings.fullControl;
   renderBalance(tk);
 
   const g = $("grid"); g.innerHTML = "";
@@ -1193,8 +1219,9 @@ function render(){  const tk = today();
     btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` +
       (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
     btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${STATE_WORDS[info.state] || info.state}`
-      + (future ? " (planned)" : "") + (lock.locked ? " (locked)" : ""));
-    if(!pre){
+      + (future ? " (planned)" : "") + (lock.locked ? " (locked)" : "")
+      + (pre ? " (before this book starts)" : ""));
+    {
       let held = false, timer = 0;
       btn.addEventListener("pointerdown", () => { held = false; timer = setTimeout(() => { held = true; openDay(key); }, 450); });
       const cancel = () => clearTimeout(timer);
@@ -1226,11 +1253,42 @@ function setDay(key, state, qtyMl){
 
 /** Why a day cannot be changed, or null if it can. */
 function editBlocked(key){
+  // Full control means exactly that: no month is closed to you and no day is
+  // out of reach. It is a deliberate switch rather than the default, because
+  // the ordinary case is a book you do not want a stray thumb rewriting.
+  if(store.settings.fullControl) return null;
   const d = parseYmd(key);
   if(lockInfo(store, d.getFullYear(), d.getMonth(), today()).locked)
     return `${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed. Unlock it above to correct a day.`;
-  if(key < store.settings.startDate) return "That day is before you started tracking";
+  if(key < store.settings.startDate) return BEFORE_START;
   return null;
+}
+
+/* Not a sentence but a marker, because this one is answerable: the caller
+   offers to move the start date rather than just refusing. */
+const BEFORE_START = "before-start";
+
+/**
+ * Reach further back than the book currently goes.
+ *
+ * The newly covered days are written as "not recorded" rather than left to take
+ * the default. If the default is "delivered", simply moving the start date back
+ * would invent a month of deliveries and put them on a bill — which is the
+ * opposite of what someone correcting their records wants.
+ */
+function extendStartTo(key){
+  const d = parseYmd(key);
+  const newStart = keyOf(d.getFullYear(), d.getMonth(), 1);
+  const oldStart = store.settings.startDate;
+  if(newStart >= oldStart) return 0;
+  let filled = 0;
+  for(let k = newStart; k < oldStart; k = addDays(k, 1)){
+    if(!store.days[k]){ writeDay(k, "none", null); filled++; }
+  }
+  store.settings = Object.assign({}, store.settings, { startDate: newStart, t: Date.now() });
+  saveStore(store);
+  queueSync();
+  return filled;
 }
 
 /**
@@ -1260,8 +1318,27 @@ function withUndo(keys, apply, message){
   });
 }
 
+/** Handle a block a person can actually do something about. Returns true if it dealt with it. */
+function offerToReachBack(key, then){
+  const d = parseYmd(key);
+  const label = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+  ask(`Start the book from ${label}?`,
+    `Your book currently begins on ${store.settings.startDate}, so this day is outside it. `
+    + `Reaching back adds those days as "not recorded" — nothing is assumed delivered and no bill `
+    + `changes until you mark the days yourself.`,
+    `Reach back to ${label}`,
+    () => {
+      const filled = extendStartTo(key);
+      render();
+      toast(filled ? `Book now starts ${MONTHS[d.getMonth()].slice(0,3)} ${d.getFullYear()}` : "Book extended");
+      if(then) then();
+    });
+  return true;
+}
+
 function cycle(key){
   const blocked = editBlocked(key);
+  if(blocked === BEFORE_START) return offerToReachBack(key, () => cycle(key));
   if(blocked) return toast(blocked);
   const cur = dayInfo(store, key).state;
   const next = CYCLE[(CYCLE.indexOf(cur) + 1) % CYCLE.length] || "yes";
@@ -1354,6 +1431,7 @@ function openSettings(){
   $("fRate").value = st.rateMinor / 100;
   $("fStart").value = st.startDate;
   $("fLock").value = String(Number(st.lockAfterDays) || 0);
+  $("fFull").value = st.fullControl ? "1" : "0";
   const def = $("fDefault"); def.innerHTML = "";
   for(const [val, label] of DEFAULT_STATES){
     const o = document.createElement("option");
@@ -1429,6 +1507,7 @@ $("saveSettings").addEventListener("click", () => {
     startDate: $("fStart").value || store.settings.startDate,
     lockAfterDays: Math.max(0, parseInt($("fLock").value, 10) || 0),
     lockChoice: true,
+    fullControl: $("fFull").value === "1",
     defaultState: DEFAULT_STATES.some(d => d[0] === $("fDefault").value) ? $("fDefault").value : "yes",
     skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
   };
@@ -1448,6 +1527,10 @@ $("saveSettings").addEventListener("click", () => {
     { label: "Apply to past months too", run: () => applySettings(next, false) });
 });
 $("btnLocal").addEventListener("click", downloadLocalCopy);
+$("fullOff").addEventListener("click", () => {
+  store.settings = Object.assign({}, store.settings, { fullControl: false, t: Date.now() });
+  saveStore(store); queueSync(); render(); toast("Full control off");
+});
 $("btnReset").addEventListener("click", () => {  ask("Erase everything?",
     "Every day you have recorded on this device will be deleted. This cannot be undone, "
     + "and if you are syncing, the other phones still hold their copy.",
@@ -1459,6 +1542,7 @@ $("btnReset").addEventListener("click", () => {  ask("Erase everything?",
 /* day editor */
 function openDay(key){
   const blocked = editBlocked(key);
+  if(blocked === BEFORE_START) return offerToReachBack(key, () => openDay(key));
   if(blocked) return toast(blocked);
   editKey = key;
   const info = dayInfo(store, key);
@@ -1483,6 +1567,7 @@ function openDay(key){
 }
 $("dSave").addEventListener("click", () => {
   const blocked = editBlocked(editKey);
+  if(blocked === BEFORE_START){ sheet(null); return offerToReachBack(editKey); }
   if(blocked){ sheet(null); return toast(blocked); }
   const q = Math.max(0, Math.round(parseFloat($("dQty").value || "0") * 1000));
   const state = editState;
