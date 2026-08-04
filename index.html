@@ -120,6 +120,8 @@
   .lockchip:hover{background:var(--raised); color:var(--text-2)}
   .lockchip svg{width:12px; height:12px; flex:none}
   .lockchip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+  .lockchip.temp{background:var(--warn-soft); border-color:var(--warn); color:var(--warn)}
+  .lockchip[disabled]{opacity:.55; cursor:default}
 
   .legend{display:flex; flex-wrap:wrap; gap:12px; justify-content:center; margin-top:12px; padding-top:11px; border-top:1px solid var(--line)}
   .legend i{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--text-3); font-style:normal}
@@ -817,15 +819,32 @@ const monthKeyOf = (y, m) => `${y}-${pad2(m + 1)}`;
    attacking a milk book. An explicit unlock always beats the automatic rule, so
    closing the books can never trap you. */
 function lockInfo(store, y, m, todayKey){
+  // Full control is the deliberate, banner-announced version of this. While it
+  // is on nothing is closed, and the calendar has to say so — showing a month
+  // as closed while edits go through is worse than either answer on its own.
+  if(store.settings.fullControl) return { locked: false, reason: "full" };
+
   const rec = (store.locks || {})[monthKeyOf(y, m)];
-  if(rec && typeof rec.on === "boolean")
-    return { locked: rec.on, reason: rec.on ? "manual" : "open" };
+  if(rec && rec.on === true) return { locked: true, reason: "manual" };
+  // An unlock is for the day you did it. Opening a month to fix one day used to
+  // leave it open for good: the record beat the automatic rule for ever, so the
+  // protection quietly never came back. Now it lapses and the month closes
+  // itself again, which is what somebody unlocking to make a correction meant.
+  if(rec && rec.on === false && dayKeyOfTime(rec.t) === todayKey)
+    return { locked: false, reason: "today" };
+
   const after = Number(store.settings.lockAfterDays) || 0;
   if(after > 0){
     const lastDay = keyOf(y, m, daysInMonth(y, m));
     if(addDays(lastDay, after) <= todayKey) return { locked: true, reason: "auto" };
   }
   return { locked: false, reason: "open" };
+}
+
+/** The calendar day a timestamp fell on, so an unlock can lapse when that day does. */
+function dayKeyOfTime(t){
+  const d = new Date(Number(t) || 0);
+  return ymd(d);
 }
 
 function dayLocked(store, key, todayKey){
@@ -1171,11 +1190,19 @@ function render(){  const tk = today();
 
   const lock = lockInfo(store, viewY, viewM, tk);
   const lockBtn = $("btnLock");
-  lockBtn.className = "lockchip" + (lock.locked ? " on" : "");
-  lockBtn.innerHTML = (lock.locked ? ICON_LOCK : ICON_OPEN)
-    + `<span>${lock.locked ? (lock.reason === "auto" ? "Closed" : "Locked") : "Lock month"}</span>`;
+  const chipWord = lock.locked
+    ? (lock.reason === "auto" ? "Closed" : "Locked")
+    : lock.reason === "today" ? "Open today"
+    : lock.reason === "full" ? "Full control"
+    : "Lock month";
+  lockBtn.className = "lockchip" + (lock.locked ? " on" : "") + (lock.reason === "today" ? " temp" : "");
+  lockBtn.innerHTML = (lock.locked ? ICON_LOCK : ICON_OPEN) + `<span>${chipWord}</span>`;
+  lockBtn.disabled = lock.reason === "full";
   lockBtn.setAttribute("aria-label",
-    lock.locked ? `${MONTHS[viewM]} ${viewY} is locked. Tap to unlock.` : `Lock ${MONTHS[viewM]} ${viewY}`);
+    lock.locked ? `${MONTHS[viewM]} ${viewY} is locked. Tap to unlock.`
+      : lock.reason === "today" ? `${MONTHS[viewM]} ${viewY} is open for today only. Tap to close it now.`
+      : lock.reason === "full" ? `Full control is on, so ${MONTHS[viewM]} ${viewY} is open`
+      : `Lock ${MONTHS[viewM]} ${viewY}`);
 
   const s = monthSummary(store, viewY, viewM, tk);
   const plan = monthPlan(store, viewY, viewM, tk);
@@ -1698,10 +1725,12 @@ $("bLock").addEventListener("click", () => {
     sheet(null);
     return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
   }
-  ask(`Unlock ${label}?`,
-    "Its records can be changed again, on every phone sharing this book.",
-    "Unlock",
-    () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
+  ask(`Unlock ${label} for today?`,
+    "Its records can be changed again, on every phone sharing this book. The month closes itself "
+    + "again tomorrow, so opening it to fix one day does not leave it open for good. If you need "
+    + "longer, turn on full control in settings.",
+    "Unlock for today",
+    () => { setMonthLock(viewY, viewM, false); toast(`${label} open for today`); });
 });
 async function shareBill(copyOnly){
   const text = billText(store, viewY, viewM, today());
@@ -1837,10 +1866,12 @@ $("btnLock").addEventListener("click", () => {
     setMonthLock(viewY, viewM, true);
     return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
   }
-  ask(`Unlock ${label}?`,
-    "Its records can be changed again, on every phone sharing this book.",
-    "Unlock",
-    () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
+  ask(`Unlock ${label} for today?`,
+    "Its records can be changed again, on every phone sharing this book. The month closes itself "
+    + "again tomorrow, so opening it to fix one day does not leave it open for good. If you need "
+    + "longer, turn on full control in settings.",
+    "Unlock for today",
+    () => { setMonthLock(viewY, viewM, false); toast(`${label} open for today`); });
 });
 
 /* ---------------- init ---------------- */
