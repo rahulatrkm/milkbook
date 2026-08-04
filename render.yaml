@@ -1,5 +1,6 @@
 # Render.com free-tier deploy for the Milkbook sync mirror + calendar feed.
 # New > Blueprint > connect this repo. Free plan, auto-deploys on push.
+# Live at https://milkbook-a0ru.onrender.com - keep API in index.html in step.
 services:
   - type: web
     name: milkbook

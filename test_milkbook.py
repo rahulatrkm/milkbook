@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -164,6 +165,98 @@ except ValueError:
     ok("a non-object body is refused", True)
 
 
+# ------------------------------------------------------------------------ locks
+print("\nMILKBOOK — month locks travel between phones")
+ok("a lock survives the round trip",
+   M.sanitise({"locks": {"2026-06": {"on": True, "t": 5}}})["locks"]["2026-06"]["on"] is True)
+ok("a malformed month key is dropped",
+   M.sanitise({"locks": {"2026-06-01": {"on": True, "t": 5}}})["locks"] == {})
+ok("a lock flag is coerced to a boolean",
+   M.sanitise({"locks": {"2026-06": {"on": "yes please", "t": 5}}})["locks"]["2026-06"]["on"] is True)
+ok("a book with no locks still answers with a locks map",
+   M.sanitise({"days": {}})["locks"] == {})
+
+locked = {"settings": {}, "days": {}, "locks": {"2026-06": {"on": True, "t": 100}}}
+opened = {"settings": {}, "days": {}, "locks": {"2026-06": {"on": False, "t": 200}}}
+ok("a lock reaches a phone that had none",
+   M.merge({"settings": {}, "days": {}}, locked)["locks"]["2026-06"]["on"] is True)
+ok("the later unlock wins", M.merge(locked, opened)["locks"]["2026-06"]["on"] is False)
+ok("order does not change the outcome",
+   M.merge(locked, opened)["locks"] == M.merge(opened, locked)["locks"])
+ok("a peer with no locks does not clear ours",
+   M.merge(locked, {"settings": {}, "days": {}})["locks"]["2026-06"]["on"] is True)
+ok("merging locks is idempotent",
+   M.merge(M.merge(locked, opened), opened) == M.merge(locked, opened))
+try:
+    M.sanitise({"locks": {f"20{i:02d}-01": {"on": True, "t": 1} for i in range(M.MAX_MONTHS + 10)}})
+    ok("an absurd number of months is refused", False)
+except ValueError:
+    ok("an absurd number of months is refused", True)
+
+ok("the automatic-close setting is kept",
+   M.sanitise({"settings": {"lockAfterDays": 7}})["settings"]["lockAfterDays"] == 7)
+ok("an absurd automatic-close window is clamped",
+   M.sanitise({"settings": {"lockAfterDays": 99999}})["settings"]["lockAfterDays"] == 366)
+
+
+# ------------------------------------------------------- what a blank day means
+print("\nMILKBOOK — what an untouched day means")
+ok("delivered is still the default",
+   M.day_state({"settings": {}, "days": {}}, "2026-06-03")[0] == "yes")
+ok("it can mean not delivered",
+   M.day_state({"settings": {"defaultState": "skip"}, "days": {}}, "2026-06-03")[0] == "skip")
+ok("it can mean nothing recorded",
+   M.day_state({"settings": {"defaultState": "none"}, "days": {}}, "2026-06-03")[0] == "none")
+ok("a nonsense default falls back to delivered",
+   M.sanitise({"settings": {"defaultState": "whatever"}})["settings"]["defaultState"] == "yes")
+ok("an unrecorded day carries no quantity",
+   M.day_state({"settings": {"defaultState": "none"}, "days": {}}, "2026-06-03")[1] == 0)
+
+_waiting = M.month_summary({"settings": {"defaultState": "none", "rateMinor": 6000,
+                                         "qtyMl": 1000, "startDate": "2026-01-01"},
+                            "days": {}}, 2026, 7, "2026-07-31")
+ok("unrecorded days are counted", _waiting["pending"] == 31, str(_waiting["pending"]))
+ok("unrecorded days are never billed", _waiting["amountMinor"] == 0)
+
+ok("a settled day survives the round trip",
+   M.sanitise({"days": {"2026-06-01": {"s": "off", "t": 1}}})["days"]["2026-06-01"]["s"] == "off")
+ok("an unrecorded day survives the round trip",
+   M.sanitise({"days": {"2026-06-01": {"s": "none", "t": 1}}})["days"]["2026-06-01"]["s"] == "none")
+
+
+# --------------------------------------------- nothing a user has is ever lost
+# The rule in docs/adr/0013: a build that does not recognise a field must carry
+# it, not drop it. Clients ship before servers do, so this is not hypothetical.
+print("\nMILKBOOK — an older build cannot erase a newer one's data")
+_future = {"settings": {"t": 5, "vendor": "Dairy", "somethingNew": "keep me"},
+           "days": {}, "unknownSection": {"x": 1}}
+_clean = M.sanitise(_future)
+ok("a setting this build never heard of is kept",
+   _clean["settings"].get("somethingNew") == "keep me")
+ok("a whole section this build never heard of is kept",
+   _clean.get("unknownSection") == {"x": 1})
+ok("the fields it does know are still cleaned",
+   _clean["settings"]["vendor"] == "Dairy")
+ok("carried-through data is bounded",
+   len(M.sanitise({"settings": {}, **{f"junk{i}": i for i in range(200)}})) <= 23,
+   str(len(M.sanitise({"settings": {}, **{f"junk{i}": i for i in range(200)}}))))
+ok("an oversized unknown field is not carried",
+   "big" not in M.sanitise({"settings": {}, "big": "x" * 9000}))
+
+# a server that predates a setting answers without it; merging must not reset it
+_new_client = {"settings": {"t": 9, "defaultState": "none", "lockAfterDays": 7}, "days": {}}
+_old_server = {"settings": {"t": 12, "vendor": "Dairy"}, "days": {}}
+_merged = M.merge(_new_client, _old_server)
+ok("a newer reply does not erase settings it never carried",
+   _merged["settings"].get("defaultState") == "none"
+   and _merged["settings"].get("lockAfterDays") == 7,
+   json.dumps(_merged["settings"]))
+ok("the newer reply still wins where it does carry a value",
+   _merged["settings"]["vendor"] == "Dairy")
+ok("an empty peer cannot blank the settings",
+   M.merge(_new_client, {"settings": {}, "days": {}})["settings"]["defaultState"] == "none")
+
+
 # ------------------------------------------------------------------------ http
 print("\nMILKBOOK — http surface")
 CODE = "K4M2-P8QX-7T3B"
@@ -261,9 +354,9 @@ for year, month, today in [(2026, 6, "2026-06-30"), (2026, 6, "2026-06-12"), (20
         "year": year, "month": month, "today": today,
         "expected": M.month_summary(fixture["book"], year, month, today),
     })
-with open("/tmp/milkbook_fixture.json", "w") as fh:
+with open(Path(__file__).resolve().parent / ".fixture.json", "w") as fh:
     json.dump(fixture, fh)
-print(f"\n  wrote /tmp/milkbook_fixture.json for the client cross-check")
+print("\n  wrote .fixture.json for the client cross-check")
 
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

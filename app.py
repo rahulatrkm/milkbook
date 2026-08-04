@@ -25,10 +25,13 @@ DB_PATH = os.environ.get("MILKBOOK_DB", os.path.join(os.path.dirname(__file__), 
 
 CODE_RE = re.compile(r"^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-STATES = {"yes", "skip", "away"}
+MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+STATES = {"yes", "skip", "away", "none", "off"}
+DEFAULT_STATES = {"yes", "skip", "none"}
 
 MAX_BODY = 512 * 1024
 MAX_DAYS = 20_000
+MAX_MONTHS = 1_200
 RATE_LIMIT = 90          # requests
 RATE_WINDOW = 60         # seconds
 
@@ -62,11 +65,13 @@ def read_book(code: str) -> dict:
     with _db() as conn:
         row = conn.execute("SELECT data FROM books WHERE code = ?", (code,)).fetchone()
     if not row:
-        return {"settings": {}, "days": {}}
+        return {"settings": {}, "days": {}, "locks": {}}
     try:
-        return json.loads(row[0])
+        book = json.loads(row[0])
     except json.JSONDecodeError:
-        return {"settings": {}, "days": {}}
+        return {"settings": {}, "days": {}, "locks": {}}
+    book.setdefault("locks", {})       # books stored before locks existed
+    return book
 
 
 def write_book(code: str, book: dict) -> None:
@@ -80,6 +85,31 @@ def write_book(code: str, book: dict) -> None:
 
 
 # ---------------------------------------------------------------------- domain
+def _carry_unknown(raw: dict, known: set) -> dict:
+    """Fields this build does not recognise, kept rather than dropped.
+
+    A client is often newer than the server it talks to, and this endpoint
+    answers with what it stored. Sanitising an unknown field away would mean a
+    phone loses a setting it just saved, simply because this process has not
+    been redeployed. Bounded so it cannot become a place to put anything.
+    """
+    out: dict = {}
+    for key, value in raw.items():
+        if key in known or not isinstance(key, str) or len(key) > 40 or len(out) >= 20:
+            continue
+        try:
+            if len(json.dumps(value)) <= 4096:
+                out[key] = value
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+KNOWN_SETTINGS = {"t", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
+                  "skipWeekly", "lockAfterDays", "defaultState"}
+KNOWN_TOP = {"settings", "days", "locks"}
+
+
 def sanitise(book: dict) -> dict:
     """Accept only what we understand. Anything else is dropped rather than stored."""
     if not isinstance(book, dict):
@@ -96,9 +126,13 @@ def sanitise(book: dict) -> dict:
             "currency": str(raw_settings.get("currency") or "INR")[:4],
             "startDate": str(raw_settings.get("startDate") or "")[:10],
             "skipWeekly": [d for d in (raw_settings.get("skipWeekly") or []) if isinstance(d, int) and 0 <= d <= 6],
+            "lockAfterDays": max(0, min(int(raw_settings.get("lockAfterDays") or 0), 366)),
+            "defaultState": (raw_settings.get("defaultState")
+                             if raw_settings.get("defaultState") in DEFAULT_STATES else "yes"),
         }
         if not DAY_RE.match(settings["startDate"]):
             settings["startDate"] = ""
+        settings.update(_carry_unknown(raw_settings, KNOWN_SETTINGS))
 
     raw_days = book.get("days")
     days: dict = {}
@@ -117,25 +151,48 @@ def sanitise(book: dict) -> dict:
                 clean["q"] = max(0, min(int(qty), 100_000))
             days[key] = clean
 
-    return {"settings": settings, "days": days}
+    # Month locks. Stored the same way as a day so they merge the same way: a
+    # lock set on one phone has to reach the others, or it is not a lock.
+    raw_locks = book.get("locks")
+    locks: dict = {}
+    if isinstance(raw_locks, dict):
+        if len(raw_locks) > MAX_MONTHS:
+            raise ValueError("too many months")
+        for key, entry in raw_locks.items():
+            if not MONTH_RE.match(key) or not isinstance(entry, dict):
+                continue
+            locks[key] = {"on": bool(entry.get("on")), "t": int(entry.get("t") or 0)}
+
+    return {"settings": settings, "days": days, "locks": locks, **_carry_unknown(book, KNOWN_TOP)}
 
 
 def merge(a: dict, b: dict) -> dict:
     """Per-day last-write-wins; settings win as a unit on their own timestamp."""
     a_set, b_set = a.get("settings") or {}, b.get("settings") or {}
-    settings = b_set if (b_set.get("t") or 0) > (a_set.get("t") or 0) else a_set
+    newer, older = (b_set, a_set) if (b_set.get("t") or 0) > (a_set.get("t") or 0) else (a_set, b_set)
+    # The newer copy wins field by field, but a setting it never carried must
+    # not erase the one we already hold.
+    settings = {**older, **newer}
 
-    a_days, b_days = a.get("days") or {}, b.get("days") or {}
-    days = {}
-    for key in set(a_days) | set(b_days):
-        x, y = a_days.get(key), b_days.get(key)
-        if x is None:
-            days[key] = y
-        elif y is None:
-            days[key] = x
-        else:
-            days[key] = y if (y.get("t") or 0) > (x.get("t") or 0) else x
-    return {"settings": settings, "days": days}
+    def newest(x_map: dict, y_map: dict) -> dict:
+        out = {}
+        for key in set(x_map) | set(y_map):
+            x, y = x_map.get(key), y_map.get(key)
+            if x is None:
+                out[key] = y
+            elif y is None:
+                out[key] = x
+            else:
+                out[key] = y if (y.get("t") or 0) > (x.get("t") or 0) else x
+        return out
+
+    return {
+        "settings": settings,
+        "days": newest(a.get("days") or {}, b.get("days") or {}),
+        "locks": newest(a.get("locks") or {}, b.get("locks") or {}),
+        **_carry_unknown(a, KNOWN_TOP),
+        **_carry_unknown(b, KNOWN_TOP),
+    }
 
 
 def day_state(book: dict, key: str) -> tuple[str, int]:
@@ -144,8 +201,11 @@ def day_state(book: dict, key: str) -> tuple[str, int]:
     dow = (datetime.strptime(key, "%Y-%m-%d").weekday() + 1) % 7  # python: Mon=0 -> js: Sun=0
     if entry and entry.get("s"):
         state = entry["s"]
+    elif dow in (settings.get("skipWeekly") or []):
+        state = "off"
     else:
-        state = "off" if dow in (settings.get("skipWeekly") or []) else "yes"
+        default = settings.get("defaultState")
+        state = default if default in DEFAULT_STATES else "yes"
     if state != "yes":
         return state, 0
     qty = entry.get("q") if entry and entry.get("q") is not None else settings.get("qtyMl", 1000)
@@ -157,7 +217,7 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
     start = settings.get("startDate") or "0000-01-01"
     last = (date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)).day
 
-    total_ml = delivered = skipped = away = off = 0
+    total_ml = delivered = skipped = away = off = pending = 0
     for d in range(1, last + 1):
         key = f"{year:04d}-{month:02d}-{d:02d}"
         if key < start or key > today_key:
@@ -170,13 +230,15 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
             skipped += 1
         elif state == "away":
             away += 1
+        elif state == "none":
+            pending += 1
         else:
             off += 1
 
     rate = int(settings.get("rateMinor") or 0)
     amount = round(total_ml * rate / 1000)
     return {"totalMl": total_ml, "delivered": delivered, "skipped": skipped,
-            "away": away, "off": off, "amountMinor": amount}
+            "away": away, "off": off, "pending": pending, "amountMinor": amount}
 
 
 # ------------------------------------------------------------------------- ics
