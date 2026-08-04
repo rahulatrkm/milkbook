@@ -98,10 +98,24 @@
   .day.away{background:var(--accent-soft)} .day.away .n{color:var(--accent)}
   .day.off{background:transparent; border:1px dashed var(--line-2)}
   .day.off .n{color:var(--text-3)}
-  .day.future{opacity:.38}
+  .day.none{background:transparent; border:1px solid var(--line)}
+  .day.none .n{color:var(--text-3)}
+  .day.future{opacity:.55}
+  .day.future .n{font-style:italic}
   .day.pre{opacity:.28; pointer-events:none}
+  .day.locked{opacity:.7}
+  .day.locked::after{content:""; position:absolute; inset:0; border-radius:10px;
+    background:repeating-linear-gradient(45deg,transparent,transparent 5px,rgba(123,131,152,.13) 5px,rgba(123,131,152,.13) 10px)}
   .day.today{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent)}
   .day .q{position:absolute; bottom:3px; font-size:8.5px; font-weight:600; color:var(--text-3); line-height:1}
+
+  .monthside{display:flex; flex-direction:column; align-items:flex-end; gap:7px}
+  .lockchip{display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
+    padding:4px 9px; border-radius:999px; border:1px solid var(--line-2); color:var(--text-3);
+    transition:background .15s, border-color .15s, color .15s}
+  .lockchip:hover{background:var(--raised); color:var(--text-2)}
+  .lockchip svg{width:12px; height:12px; flex:none}
+  .lockchip.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
 
   .legend{display:flex; flex-wrap:wrap; gap:12px; justify-content:center; margin-top:12px; padding-top:11px; border-top:1px solid var(--line)}
   .legend i{display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--text-3); font-style:normal}
@@ -173,8 +187,10 @@
   #toast{position:fixed; left:50%; bottom:calc(88px + env(safe-area-inset-bottom)); transform:translate(-50%,10px);
     z-index:50; background:var(--text); color:var(--bg); padding:10px 18px; border-radius:999px;
     font-size:13.5px; font-weight:550; opacity:0; transition:.26s cubic-bezier(.22,1,.36,1); pointer-events:none;
-    max-width:88vw; text-align:center}
-  #toast.on{opacity:1; transform:translate(-50%,0)}
+    max-width:88vw; text-align:center; display:flex; align-items:center; gap:12px; justify-content:center}
+  #toast.on{opacity:1; transform:translate(-50%,0); pointer-events:auto}
+  #toast .undo{font-weight:700; color:var(--bg); text-decoration:underline; text-underline-offset:2px;
+    padding:0 2px; flex:none}
 
   .fab{position:fixed; left:50%; transform:translateX(-50%); bottom:calc(20px + env(safe-area-inset-bottom));
     z-index:20; display:flex; gap:8px; background:var(--surface); border:1px solid var(--line);
@@ -246,14 +262,17 @@
       <div class="amount num" id="sAmount">—</div>
       <div class="amountsub" id="sSub">no deliveries yet</div>
     </div>
-    <div class="monthnav">
-      <button class="navbtn" id="prevM" aria-label="Previous month">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-      </button>
-      <b id="mLabel">—</b>
-      <button class="navbtn" id="nextM" aria-label="Next month">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-      </button>
+    <div class="monthside">
+      <div class="monthnav">
+        <button class="navbtn" id="prevM" aria-label="Previous month">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <b id="mLabel">—</b>
+        <button class="navbtn" id="nextM" aria-label="Next month">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+      </div>
+      <button class="lockchip" id="btnLock">Lock month</button>
     </div>
   </div>
 
@@ -265,6 +284,7 @@
       <i><span class="dot" style="background:var(--warn)"></span>Skipped</i>
       <i><span class="dot" style="background:var(--accent)"></span>Away</i>
       <i><span class="dot" style="border:1px dashed var(--line-2)"></span>Vendor off</i>
+      <i id="legendNone" class="hide"><span class="dot" style="border:1px solid var(--line)"></span>Not recorded</i>
     </div>
   </div>
 
@@ -320,6 +340,22 @@
     <div class="chips" id="fOff"></div>
     <p class="hint">Days your vendor never delivers. These are not counted or billed.</p>
   </div>
+  <div class="field">
+    <label for="fDefault">A day I have not touched means</label>
+    <select id="fDefault"></select>
+    <p class="hint" id="fDefaultHint"></p>
+  </div>
+  <div class="field">
+    <label for="fLock">Close the books automatically</label>
+    <select id="fLock">
+      <option value="0">Never — I will lock months myself</option>
+      <option value="3">3 days after a month ends</option>
+      <option value="7">7 days after a month ends</option>
+      <option value="15">15 days after a month ends</option>
+      <option value="31">A month after a month ends</option>
+    </select>
+    <p class="hint">A closed month cannot be changed by a stray tap, on any phone sharing this book. You can always unlock one when you genuinely need to.</p>
+  </div>
   <button class="btn" id="saveSettings">Save</button>
   <button class="btn danger" id="btnReset" style="margin-top:8px">Erase all data</button>
 </div>
@@ -361,8 +397,10 @@
   <p class="lede" id="bVendor"></p>
   <div id="bRows"></div>
   <div class="billtotal"><span>Total</span><b class="num" id="bTotal">—</b></div>
+  <p class="hint" id="bNote"></p>
   <button class="btn" id="bShare">Share bill</button>
   <button class="btn sec" id="bCopy" style="margin-top:8px">Copy as text</button>
+  <button class="btn sec" id="bLock" style="margin-top:8px">Lock this month</button>
 </div>
 
 <!-- calendar -->
@@ -402,6 +440,16 @@
     <button class="btn danger" id="sLeave" style="margin-top:8px">Stop syncing on this device</button>
   </div>
   <p class="hint" style="margin-top:16px">Anyone with the code can read and edit the book, so only share it with your household. No account, no email, no tracking.</p>
+</div>
+
+<!-- confirm -->
+<div class="sheet" id="shConfirm">
+  <div class="grab"></div>
+  <h2 id="cfTitle">Are you sure?</h2>
+  <p class="lede" id="cfBody"></p>
+  <button class="btn" id="cfYes">Yes</button>
+  <button class="btn sec" id="cfAlt" style="margin-top:8px; display:none"></button>
+  <button class="btn sec" id="cfNo" style="margin-top:8px">Cancel</button>
 </div>
 
 <div id="toast"></div>
@@ -449,9 +497,10 @@ function freshStore(){
     settings: {
       t: Date.now(), vendor: "", qtyMl: 1000, rateMinor: 6000,
       currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
-      skipWeekly: [],
+      skipWeekly: [], lockAfterDays: 0, defaultState: "yes",
     },
     days: {},
+    locks: {},
     sync: null,
   };
 }
@@ -463,6 +512,7 @@ function loadStore(){
     const f = freshStore();
     s.settings = Object.assign(f.settings, s.settings || {});
     s.days = s.days || {};
+    s.locks = s.locks || {};
     return s;
   }catch(e){ return freshStore(); }
 }
@@ -471,10 +521,22 @@ function saveStore(s){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(s)); 
 const symbolOf = code => (CURRENCIES.find(c => c[0] === code) || ["", "\u20B9"])[1];
 
 /* ---------------- pure domain ---------------- */
+
+/* What a day nobody has touched means. Assuming it was delivered suits most
+   households and is why it is the default, but assuming is not the same as
+   knowing — so it is a setting, and "none" exists for people who would rather
+   their bill only ever counted days they confirmed. */
+const DEFAULT_STATES = [
+  ["yes", "Delivered \u2014 I mark the exceptions"],
+  ["skip", "Not delivered \u2014 I mark the days it came"],
+  ["none", "Nothing until I say \u2014 flag days I have not recorded"],
+];
+
 function dayInfo(store, key){
   const st = store.settings, e = store.days[key] || null;
   const dow = parseYmd(key).getDay();
-  const state = e && e.s ? e.s : ((st.skipWeekly || []).includes(dow) ? "off" : "yes");
+  const fallback = (st.skipWeekly || []).includes(dow) ? "off" : (st.defaultState || "yes");
+  const state = e && e.s ? e.s : fallback;
   const qtyMl = state === "yes" ? (e && e.q != null ? e.q : st.qtyMl) : 0;
   return { state, qtyMl, custom: !!(e && e.q != null) };
 }
@@ -482,7 +544,7 @@ function dayInfo(store, key){
 function monthSummary(store, y, m, todayKey){
   const n = daysInMonth(y, m);
   const start = store.settings.startDate;
-  let totalMl = 0, delivered = 0, skipped = 0, away = 0, off = 0;
+  let totalMl = 0, delivered = 0, skipped = 0, away = 0, off = 0, pending = 0;
   for(let d = 1; d <= n; d++){
     const key = keyOf(y, m, d);
     if(key < start || key > todayKey) continue;
@@ -490,21 +552,78 @@ function monthSummary(store, y, m, todayKey){
     if(info.state === "yes"){ delivered++; totalMl += info.qtyMl; }
     else if(info.state === "skip") skipped++;
     else if(info.state === "away") away++;
+    else if(info.state === "none") pending++;
     else off++;
   }
   // one rounding at the end, the way a vendor totals litres then multiplies
   const amountMinor = Math.round(totalMl * store.settings.rateMinor / 1000);
-  return { totalMl, delivered, skipped, away, off, amountMinor };
+  return { totalMl, delivered, skipped, away, off, pending, amountMinor };
+}
+
+/* What is pencilled in for days that have not happened yet.
+
+   Kept apart from the bill on purpose. You can tell the book you will be away
+   next month, and that is useful to your vendor, but it is a plan and not a
+   delivery — a bill counts what happened. */
+function monthPlan(store, y, m, todayKey){
+  const n = daysInMonth(y, m);
+  let ahead = 0, away = 0, skipped = 0;
+  for(let d = 1; d <= n; d++){
+    const key = keyOf(y, m, d);
+    if(key <= todayKey) continue;
+    ahead++;
+    const state = dayInfo(store, key).state;
+    if(state === "away") away++;
+    else if(state === "skip") skipped++;
+  }
+  return { ahead, away, skipped, paused: away + skipped };
+}
+
+const monthKeyOf = (y, m) => `${y}-${pad2(m + 1)}`;
+
+/* Whether a month's records are settled.
+
+   This is a latch, not a password: it exists because the easiest way to lose a
+   month of records is a thumb brushing the calendar, not because anyone is
+   attacking a milk book. An explicit unlock always beats the automatic rule, so
+   closing the books can never trap you. */
+function lockInfo(store, y, m, todayKey){
+  const rec = (store.locks || {})[monthKeyOf(y, m)];
+  if(rec && typeof rec.on === "boolean")
+    return { locked: rec.on, reason: rec.on ? "manual" : "open" };
+  const after = Number(store.settings.lockAfterDays) || 0;
+  if(after > 0){
+    const lastDay = keyOf(y, m, daysInMonth(y, m));
+    if(addDays(lastDay, after) <= todayKey) return { locked: true, reason: "auto" };
+  }
+  return { locked: false, reason: "open" };
+}
+
+function dayLocked(store, key, todayKey){
+  const d = parseYmd(key);
+  return lockInfo(store, d.getFullYear(), d.getMonth(), todayKey).locked;
 }
 
 /* Field-level last-write-wins. A whole-blob merge would silently discard
    one phone's edits whenever two people touched the book the same day. */
+
+/* The newer copy of the settings wins, but a field it does not carry must not
+   erase ours. An older phone — or a server that has not been redeployed yet —
+   answers with a book that never heard of the settings we just added, and
+   replacing wholesale would quietly reset them. */
+function mergeSettings(a, b){
+  const mine = a || {}, theirs = b || {};
+  const newer = (theirs.t || 0) > (mine.t || 0) ? theirs : mine;
+  const older = newer === theirs ? mine : theirs;
+  return Object.assign({}, older, newer);
+}
+
 function mergeStores(a, b){
   const out = {
     v: 1,
-    settings: ((b.settings || {}).t || 0) > ((a.settings || {}).t || 0)
-      ? Object.assign({}, b.settings) : Object.assign({}, a.settings),
+    settings: mergeSettings(a.settings, b.settings),
     days: {},
+    locks: {},
   };
   const ad = a.days || {}, bd = b.days || {};
   for(const k of new Set([...Object.keys(ad), ...Object.keys(bd)])){
@@ -512,6 +631,15 @@ function mergeStores(a, b){
     if(!x){ out.days[k] = y; continue; }
     if(!y){ out.days[k] = x; continue; }
     out.days[k] = (y.t || 0) > (x.t || 0) ? y : x;
+  }
+  // Locks travel the same way, so closing the books on one phone closes them
+  // on the others rather than only on the phone that pressed the button.
+  const al = a.locks || {}, bl = b.locks || {};
+  for(const k of new Set([...Object.keys(al), ...Object.keys(bl)])){
+    const x = al[k], y = bl[k];
+    if(!x){ out.locks[k] = y; continue; }
+    if(!y){ out.locks[k] = x; continue; }
+    out.locks[k] = (y.t || 0) > (x.t || 0) ? y : x;
   }
   return out;
 }
@@ -611,6 +739,7 @@ function billText(store, y, m, todayKey){
     `Delivered:  ${s.delivered} days`,
     s.skipped ? `Skipped:    ${s.skipped} days` : null,
     s.away ? `Away:       ${s.away} days` : null,
+    s.pending ? `Not recorded: ${s.pending} days (not billed)` : null,
     ``,
     `Quantity:   ${fmtL(s.totalMl)} L`,
     `Rate:       ${fmtMoney(store.settings.rateMinor, cur)} / L`,
@@ -637,22 +766,60 @@ function renderDow(){
 const ICON_TICK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 const ICON_CROSS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 const ICON_AWAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5a2.12 2.12 0 0 0-3-3L13 8 4.8 6.2a.5.5 0 0 0-.5.8l3.9 4.9-2 2H3.5a.5.5 0 0 0-.4.8l2 2.6 2.6 2a.5.5 0 0 0 .8-.4v-2.7l2-2 4.9 3.9a.5.5 0 0 0 .8-.5z"/></svg>';
+const ICON_LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
+const ICON_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 7-2.6"/></svg>';
+
+/* How far ahead the book will go. Far enough to plan a holiday, not so far
+   that the arrow never stops. */
+const FUTURE_MONTHS = 12;
+const monthsAhead = (y, m) => {
+  const n = new Date();
+  return (y - n.getFullYear()) * 12 + (m - n.getMonth());
+};
+
+const STATE_WORDS = { yes: "delivered", skip: "not delivered", away: "away",
+  off: "vendor off", none: "not recorded" };
 
 function render(){
   const tk = today();
   $("mLabel").textContent = MONTHS[viewM].slice(0, 3) + " " + viewY;
-  const lastAllowed = new Date();
-  $("nextM").disabled = (viewY > lastAllowed.getFullYear()) ||
-    (viewY === lastAllowed.getFullYear() && viewM >= lastAllowed.getMonth());
+  const ahead = monthsAhead(viewY, viewM);
+  $("nextM").disabled = ahead >= FUTURE_MONTHS;
+
+  const lock = lockInfo(store, viewY, viewM, tk);
+  const lockBtn = $("btnLock");
+  lockBtn.className = "lockchip" + (lock.locked ? " on" : "");
+  lockBtn.innerHTML = (lock.locked ? ICON_LOCK : ICON_OPEN)
+    + `<span>${lock.locked ? (lock.reason === "auto" ? "Closed" : "Locked") : "Lock month"}</span>`;
+  lockBtn.setAttribute("aria-label",
+    lock.locked ? `${MONTHS[viewM]} ${viewY} is locked. Tap to unlock.` : `Lock ${MONTHS[viewM]} ${viewY}`);
 
   const s = monthSummary(store, viewY, viewM, tk);
+  const plan = monthPlan(store, viewY, viewM, tk);
   const cur = store.settings.currency;
-  $("sAmount").innerHTML = s.delivered
-    ? fmtMoney(s.amountMinor, cur) + ` <small>${fmtL(s.totalMl)} L</small>`
-    : "\u2014";
-  $("sSub").textContent = s.delivered
-    ? `${s.delivered} delivered${s.skipped ? ` \u00b7 ${s.skipped} skipped` : ""}${s.away ? ` \u00b7 ${s.away} away` : ""}`
-    : "nothing recorded this month";
+  if(ahead > 0){
+    // Nothing has happened yet, so showing a bill of zero would be a lie about
+    // a month that simply has not arrived.
+    $("sAmount").innerHTML = plan.paused
+      ? `${plan.paused} <small>day${plan.paused === 1 ? "" : "s"} paused</small>`
+      : "\u2014";
+    $("sSub").textContent = plan.paused
+      ? `planned ahead \u00b7 nothing is billed until the day arrives`
+      : "nothing planned \u2014 tap a day to pause delivery in advance";
+  } else {
+    $("sAmount").innerHTML = s.delivered
+      ? fmtMoney(s.amountMinor, cur) + ` <small>${fmtL(s.totalMl)} L</small>`
+      : "\u2014";
+    $("sSub").textContent = s.delivered
+      ? `${s.delivered} delivered${s.skipped ? ` \u00b7 ${s.skipped} skipped` : ""}${s.away ? ` \u00b7 ${s.away} away` : ""}`
+        + (s.pending ? ` \u00b7 ${s.pending} not recorded` : "")
+        + (plan.paused ? ` \u00b7 ${plan.paused} paused ahead` : "")
+      : s.pending
+        ? `nothing recorded yet \u2014 ${s.pending} day${s.pending === 1 ? "" : "s"} waiting`
+        : "nothing recorded this month";
+  }
+
+  $("legendNone").classList.toggle("hide", store.settings.defaultState !== "none" && !s.pending);
 
   const g = $("grid"); g.innerHTML = "";
   const firstDow = new Date(viewY, viewM, 1).getDay();
@@ -665,11 +832,13 @@ function render(){
     const info = dayInfo(store, key);
     const btn = document.createElement("button");
     const future = key > tk, pre = key < store.settings.startDate;
-    btn.className = "day " + info.state + (future ? " future" : "") + (pre ? " pre" : "") + (key === tk ? " today" : "");
+    btn.className = "day " + info.state + (future ? " future" : "") + (pre ? " pre" : "")
+      + (lock.locked ? " locked" : "") + (key === tk ? " today" : "");
     const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS : info.state === "away" ? ICON_AWAY : "";
     btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` +
       (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
-    btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${info.state}`);
+    btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${STATE_WORDS[info.state] || info.state}`
+      + (future ? " (planned)" : "") + (lock.locked ? " (locked)" : ""));
     if(!pre){
       let held = false, timer = 0;
       btn.addEventListener("pointerdown", () => { held = false; timer = setTimeout(() => { held = true; openDay(key); }, 450); });
@@ -681,22 +850,80 @@ function render(){
     g.appendChild(btn);
   }
   const t = dayInfo(store, tk);
-  $("fabTodayLbl").textContent = t.state === "yes" ? "Delivered today" : t.state === "skip" ? "Skipped today" : t.state === "away" ? "Away today" : "No delivery today";
+  $("fabTodayLbl").textContent = t.state === "yes" ? "Delivered today"
+    : t.state === "skip" ? "Skipped today"
+    : t.state === "away" ? "Away today"
+    : t.state === "none" ? "Mark today"
+    : "No delivery today";
 }
 
 const CYCLE = ["yes", "skip", "away"];
-function setDay(key, state, qtyMl){
+function writeDay(key, state, qtyMl){
   const e = { s: state, t: Date.now() };
   if(state === "yes" && qtyMl != null && qtyMl !== store.settings.qtyMl) e.q = qtyMl;
   store.days[key] = e;
+}
+function setDay(key, state, qtyMl){
+  writeDay(key, state, qtyMl);
   saveStore(store);
   queueSync();
 }
+
+/** Why a day cannot be changed, or null if it can. */
+function editBlocked(key){
+  const d = parseYmd(key);
+  if(lockInfo(store, d.getFullYear(), d.getMonth(), today()).locked)
+    return `${MONTHS[d.getMonth()]} ${d.getFullYear()} is locked \u2014 unlock it to make changes`;
+  if(key < store.settings.startDate) return "That day is before you started tracking";
+  return null;
+}
+
+/**
+ * Every change to the book can be taken back for a few seconds.
+ *
+ * A thumb brushing the calendar is by far the likeliest way this data goes
+ * wrong, and reversing it is the cheapest protection there is. The previous
+ * state is written back explicitly rather than by deleting the entry, because a
+ * deletion does not travel over sync — the other phone would still hold the
+ * mistake and hand it back on the next merge.
+ */
+function withUndo(keys, apply, message){
+  const before = keys.map(k => ({
+    key: k,
+    entry: store.days[k] ? Object.assign({}, store.days[k]) : null,
+    info: dayInfo(store, k),
+  }));
+  apply();
+  saveStore(store); queueSync(); render();
+  toast(message, () => {
+    for(const b of before){
+      if(b.entry) store.days[b.key] = Object.assign({}, b.entry, { t: Date.now() });
+      else writeDay(b.key, b.info.state, b.info.custom ? b.info.qtyMl : null);
+    }
+    saveStore(store); queueSync(); render();
+    toast(before.length === 1 ? "Put back" : `${before.length} days put back`);
+  });
+}
+
 function cycle(key){
+  const blocked = editBlocked(key);
+  if(blocked) return toast(blocked);
   const cur = dayInfo(store, key).state;
   const next = CYCLE[(CYCLE.indexOf(cur) + 1) % CYCLE.length] || "yes";
-  setDay(key, cur === "off" ? "yes" : next, dayInfo(store, key).custom ? dayInfo(store, key).qtyMl : null);
-  render();
+  // "off" and "none" are not part of the round trip: a tap on one of them is
+  // someone recording a delivery, not stepping to the next state.
+  const state = (cur === "off" || cur === "none") ? "yes" : next;
+  const custom = dayInfo(store, key).custom ? dayInfo(store, key).qtyMl : null;
+  const d = parseYmd(key);
+  const label = STATE_WORDS[state] || state;
+  withUndo([key], () => writeDay(key, state, custom),
+    `${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} \u2014 ${label}`);
+}
+
+function setMonthLock(y, m, on){
+  store.locks = store.locks || {};
+  store.locks[monthKeyOf(y, m)] = { on: !!on, t: Date.now() };
+  saveStore(store); queueSync(); render();
 }
 
 /* ---------------- sheets ---------------- */
@@ -709,10 +936,59 @@ function sheet(id){
 }
 $("scrim").addEventListener("click", () => sheet(null));
 
+/**
+ * Asking before something irreversible.
+ *
+ * Deliberately not `confirm()`. An installed web app can have dialogs
+ * suppressed by the browser, and a suppressed `confirm()` returns false — so
+ * the button the user just pressed would do nothing at all and say nothing
+ * about why. A sheet is the same furniture as the rest of the app and cannot
+ * fail that way.
+ */
+let confirmAction = null, confirmAlt = null;
+function ask(title, body, yesLabel, onYes, danger, alt){
+  $("cfTitle").textContent = title;
+  $("cfBody").textContent = body;
+  $("cfYes").textContent = yesLabel;
+  $("cfYes").className = "btn" + (danger ? " danger" : "");
+  confirmAction = onYes;
+  confirmAlt = alt || null;
+  const altBtn = $("cfAlt");
+  altBtn.style.display = alt ? "" : "none";
+  if(alt) altBtn.textContent = alt.label;
+  sheet("shConfirm");
+}
+$("cfYes").addEventListener("click", () => {
+  const run = confirmAction;
+  confirmAction = confirmAlt = null;
+  sheet(null);
+  if(run) run();
+});
+$("cfAlt").addEventListener("click", () => {
+  const run = confirmAlt && confirmAlt.run;
+  confirmAction = confirmAlt = null;
+  sheet(null);
+  if(run) run();
+});
+$("cfNo").addEventListener("click", () => { confirmAction = confirmAlt = null; sheet(null); });
+
 let toastT = null;
-function toast(m){
-  const el = $("toast"); el.textContent = m; el.classList.add("on");
-  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 2200);
+function toast(m, onUndo){
+  const el = $("toast");
+  el.innerHTML = "";
+  const label = document.createElement("span");
+  label.textContent = m;
+  el.appendChild(label);
+  if(onUndo){
+    const b = document.createElement("button");
+    b.className = "undo";
+    b.textContent = "Undo";
+    b.addEventListener("click", () => { el.classList.remove("on"); clearTimeout(toastT); onUndo(); });
+    el.appendChild(b);
+  }
+  el.classList.add("on");
+  clearTimeout(toastT);
+  toastT = setTimeout(() => el.classList.remove("on"), onUndo ? 6000 : 2200);
 }
 
 /* settings */
@@ -722,6 +998,23 @@ function openSettings(){
   $("fQty").value = st.qtyMl / 1000;
   $("fRate").value = st.rateMinor / 100;
   $("fStart").value = st.startDate;
+  $("fLock").value = String(Number(st.lockAfterDays) || 0);
+  const def = $("fDefault"); def.innerHTML = "";
+  for(const [val, label] of DEFAULT_STATES){
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label;
+    if(val === (st.defaultState || "yes")) o.selected = true;
+    def.appendChild(o);
+  }
+  const hint = () => {
+    $("fDefaultHint").textContent = def.value === "none"
+      ? "Days stay blank until you mark them, and the bill tells you how many are still waiting. Nothing unrecorded is ever billed."
+      : def.value === "skip"
+        ? "Days count as no delivery until you say otherwise. Suits a vendor who comes irregularly."
+        : "Days count as delivered unless you mark them. Suits a vendor who comes every day.";
+  };
+  hint();
+  def.onchange = hint;
   const sel = $("fCur"); sel.innerHTML = "";
   for(const [code, sym] of CURRENCIES){
     const o = document.createElement("option");
@@ -740,34 +1033,84 @@ function openSettings(){
   sheet("shSettings");
 }
 $("btnSettings").addEventListener("click", openSettings);
+
+/**
+ * Write down what every past day already meant.
+ *
+ * The default state and the vendor's weekly off are not just display settings:
+ * a day nobody touched is read through them, so changing one silently rewrites
+ * months of history and the bills that came from it. Settling those days into
+ * explicit records first means the new rule only ever applies from here on.
+ */
+function settleHistory(){
+  const tk = today();
+  let key = store.settings.startDate, settled = 0;
+  for(let guard = 0; key <= tk && guard < 4000; guard++){
+    if(!store.days[key]){
+      const info = dayInfo(store, key);
+      writeDay(key, info.state, info.custom ? info.qtyMl : null);
+      settled++;
+    }
+    key = addDays(key, 1);
+  }
+  return settled;
+}
+
+function applySettings(next, keepHistory){
+  if(keepHistory) settleHistory();
+  store.settings = Object.assign(store.settings, next, { t: Date.now() });
+  saveStore(store); queueSync(); render(); sheet(null); toast("Saved");
+}
+
 $("saveSettings").addEventListener("click", () => {
   const qty = Math.max(0, Math.round(parseFloat($("fQty").value || "0") * 1000));
   const rate = Math.max(0, Math.round(parseFloat($("fRate").value || "0") * 100));
-  store.settings = Object.assign(store.settings, {
+  const next = {
     t: Date.now(),
     vendor: $("fVendor").value.trim().slice(0, 60),
     qtyMl: qty || 1000,
     rateMinor: rate,
     currency: $("fCur").value,
     startDate: $("fStart").value || store.settings.startDate,
+    lockAfterDays: Math.max(0, parseInt($("fLock").value, 10) || 0),
+    defaultState: DEFAULT_STATES.some(d => d[0] === $("fDefault").value) ? $("fDefault").value : "yes",
     skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
-  });
-  saveStore(store); queueSync(); render(); sheet(null); toast("Saved");
+  };
+
+  const was = store.settings;
+  const rewritesThePast = next.defaultState !== (was.defaultState || "yes")
+    || String(next.skipWeekly) !== String(was.skipWeekly || []);
+  if(!rewritesThePast) return applySettings(next, false);
+
+  ask("This changes what past days mean",
+    "Days you actually marked are safe either way. The question is the days nobody "
+    + "touched: until now they were read one way, and the new setting reads them another. "
+    + "That would move bills you have already sent.",
+    "Keep past months as they are",
+    () => applySettings(next, true),
+    false,
+    { label: "Apply to past months too", run: () => applySettings(next, false) });
 });
 $("btnReset").addEventListener("click", () => {
-  if(!confirm("Erase all milk records on this device? This cannot be undone.")) return;
-  store = freshStore(); saveStore(store); render(); sheet(null); toast("Erased");
+  ask("Erase everything?",
+    "Every day you have recorded on this device will be deleted. This cannot be undone, "
+    + "and if you are syncing, the other phones still hold their copy.",
+    "Erase all data",
+    () => { store = freshStore(); saveStore(store); render(); toast("Erased"); },
+    true);
 });
 
 /* day editor */
 function openDay(key){
+  const blocked = editBlocked(key);
+  if(blocked) return toast(blocked);
   editKey = key;
   const info = dayInfo(store, key);
   editState = info.state === "off" ? "yes" : info.state;
   const d = parseYmd(key);
   $("dTitle").textContent = `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   const w = $("dStates"); w.innerHTML = "";
-  for(const [val, label] of [["yes","Delivered"],["skip","Not delivered"],["away","Away"]]){
+  for(const [val, label] of [["yes","Delivered"],["skip","Not delivered"],["away","Away"],["none","Not recorded"]]){
     const c = document.createElement("button");
     c.className = "chip" + (val === editState ? " on" : "");
     c.textContent = label;
@@ -783,9 +1126,12 @@ function openDay(key){
   sheet("shDay");
 }
 $("dSave").addEventListener("click", () => {
+  const blocked = editBlocked(editKey);
+  if(blocked){ sheet(null); return toast(blocked); }
   const q = Math.max(0, Math.round(parseFloat($("dQty").value || "0") * 1000));
-  setDay(editKey, editState, editState === "yes" ? q : null);
-  render(); sheet(null); toast("Updated");
+  const state = editState;
+  sheet(null);
+  withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null), "Updated");
 });
 
 /* away range */
@@ -798,10 +1144,17 @@ function applyRange(state){
   let from = $("aFrom").value, to = $("aTo").value;
   if(!from || !to) return toast("Pick both dates");
   if(from > to){ const x = from; from = to; to = x; }
-  let n = 0;
-  for(let k = from; k <= to && n < 800; k = addDays(k, 1), n++) setDay(k, state, null);
-  render(); sheet(null);
-  toast(`${n} ${n === 1 ? "day" : "days"} marked ${state === "away" ? "away" : "delivered"}`);
+  const keys = [], locked = [];
+  for(let k = from, n = 0; k <= to && n < 800; k = addDays(k, 1), n++){
+    if(editBlocked(k)) locked.push(k); else keys.push(k);
+  }
+  sheet(null);
+  if(!keys.length)
+    return toast(locked.length ? "Those days are all in locked months" : "That range has no days");
+  const word = state === "away" ? "away" : "delivered";
+  const skipped = locked.length ? ` \u00b7 ${locked.length} skipped, locked` : "";
+  withUndo(keys, () => { for(const k of keys) writeDay(k, state, null); },
+    `${keys.length} ${keys.length === 1 ? "day" : "days"} marked ${word}${skipped}`);
 }
 $("aApply").addEventListener("click", () => applyRange("away"));
 $("aClear").addEventListener("click", () => applyRange("yes"));
@@ -817,13 +1170,45 @@ $("btnBill").addEventListener("click", () => {
     ["Days delivered", String(s.delivered)],
     s.skipped ? ["Days skipped", String(s.skipped)] : null,
     s.away ? ["Days away", String(s.away)] : null,
+    s.pending ? ["Not recorded", String(s.pending)] : null,
     s.off ? ["Vendor off", String(s.off)] : null,
     ["Total quantity", fmtL(s.totalMl) + " L"],
     ["Rate", fmtMoney(store.settings.rateMinor, cur) + " / L"],
   ].filter(Boolean);
   $("bRows").innerHTML = rows.map(([k, v]) => `<div class="billrow"><span>${k}</span><b class="num">${v}</b></div>`).join("");
   $("bTotal").textContent = fmtMoney(s.amountMinor, cur);
+
+  const ahead = monthsAhead(viewY, viewM);
+  const plan = monthPlan(store, viewY, viewM, tk);
+  const lock = lockInfo(store, viewY, viewM, tk);
+  $("bNote").textContent = ahead > 0
+    ? "This month has not started. A bill counts what was delivered, so there is nothing here yet"
+      + (plan.paused ? ` \u2014 ${plan.paused} day${plan.paused === 1 ? " is" : "s are"} already planned as paused.` : ".")
+    : s.pending
+      ? `${s.pending} day${s.pending === 1 ? " has" : "s have"} not been recorded and ${s.pending === 1 ? "is" : "are"} not billed. Mark them before you send this.`
+      : ahead === 0
+        ? "Counted up to today. Days later this month are not billed until they happen."
+        : "";
+  const lockBtn = $("bLock");
+  lockBtn.style.display = ahead > 0 ? "none" : "";
+  lockBtn.textContent = lock.locked
+    ? (lock.reason === "auto" ? "Closed automatically" : "Locked \u2014 tap to unlock")
+    : "Lock this month";
   sheet("shBill");
+});
+
+$("bLock").addEventListener("click", () => {
+  const info = lockInfo(store, viewY, viewM, today());
+  const label = `${MONTHS[viewM]} ${viewY}`;
+  if(!info.locked){
+    setMonthLock(viewY, viewM, true);
+    sheet(null);
+    return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
+  }
+  ask(`Unlock ${label}?`,
+    "Its records can be changed again, on every phone sharing this book.",
+    "Unlock",
+    () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
 });
 async function shareBill(copyOnly){
   const text = billText(store, viewY, viewM, today());
@@ -897,12 +1282,12 @@ async function doSync(quiet){
     const res = await fetch(`${API}/api/store/${encodeURIComponent(store.sync)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings: store.settings, days: store.days }),
+      body: JSON.stringify({ settings: store.settings, days: store.days, locks: store.locks || {} }),
     });
     if(!res.ok) throw new Error("http " + res.status);
     const remote = await res.json();
     const merged = mergeStores(store, remote);
-    store.settings = merged.settings; store.days = merged.days;
+    store.settings = merged.settings; store.days = merged.days; store.locks = merged.locks;
     saveStore(store); render();
     if(!quiet) toast("Synced");
   }catch(e){
@@ -950,6 +1335,19 @@ $("fabToday").addEventListener("click", () => {
   const n = new Date();
   if(viewY !== n.getFullYear() || viewM !== n.getMonth()){ viewY = n.getFullYear(); viewM = n.getMonth(); render(); return; }
   cycle(today());
+});
+
+$("btnLock").addEventListener("click", () => {
+  const info = lockInfo(store, viewY, viewM, today());
+  const label = `${MONTHS[viewM]} ${viewY}`;
+  if(!info.locked){
+    setMonthLock(viewY, viewM, true);
+    return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
+  }
+  ask(`Unlock ${label}?`,
+    "Its records can be changed again, on every phone sharing this book.",
+    "Unlock",
+    () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
 });
 
 /* ---------------- init ---------------- */
