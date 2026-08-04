@@ -19,6 +19,7 @@ import sqlite3
 import time
 from collections import defaultdict, deque
 from datetime import date, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from http import HTTPStatus
 
 DB_PATH = os.environ.get("MILKBOOK_DB", os.path.join(os.path.dirname(__file__), "milkbook.db"))
@@ -109,7 +110,7 @@ def _carry_unknown(raw: dict, known: set) -> dict:
 
 KNOWN_SETTINGS = {"t", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
                   "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl"}
-KNOWN_TOP = {"settings", "days", "locks", "payments"}
+KNOWN_TOP = {"settings", "days", "locks", "payments", "rates"}
 
 
 def sanitise(book: dict) -> dict:
@@ -196,8 +197,23 @@ def sanitise(book: dict) -> dict:
                 "del": bool(entry.get("del")),
             }
 
+    # What a litre cost, from a given date onwards. Without this a price rise
+    # restates every bill ever sent, so the history is part of the record.
+    raw_rates = book.get("rates")
+    rates: dict = {}
+    if isinstance(raw_rates, dict):
+        if len(raw_rates) > MAX_MONTHS:
+            raise ValueError("too many rate changes")
+        for key, entry in raw_rates.items():
+            if not DAY_RE.match(key) or not isinstance(entry, dict):
+                continue
+            rates[key] = {
+                "r": max(0, min(int(entry.get("r") or 0), 10_000_000)),
+                "t": int(entry.get("t") or 0),
+            }
+
     return {"settings": settings, "days": days, "locks": locks, "payments": payments,
-            **_carry_unknown(book, KNOWN_TOP)}
+            "rates": rates, **_carry_unknown(book, KNOWN_TOP)}
 
 
 def merge(a: dict, b: dict) -> dict:
@@ -225,6 +241,7 @@ def merge(a: dict, b: dict) -> dict:
         "days": newest(a.get("days") or {}, b.get("days") or {}),
         "locks": newest(a.get("locks") or {}, b.get("locks") or {}),
         "payments": newest(a.get("payments") or {}, b.get("payments") or {}),
+        "rates": newest(a.get("rates") or {}, b.get("rates") or {}),
         **_carry_unknown(a, KNOWN_TOP),
         **_carry_unknown(b, KNOWN_TOP),
     }
@@ -247,12 +264,35 @@ def day_state(book: dict, key: str) -> tuple[str, int]:
     return state, int(qty)
 
 
+def rate_for(book: dict, day_key: str) -> int:
+    """What a litre cost on that day, from the rate history if there is one."""
+    rates = book.get("rates") or {}
+    best = None
+    for start in rates:
+        if start <= day_key and (best is None or start > best):
+            best = start
+    if best is None:
+        return int((book.get("settings") or {}).get("rateMinor") or 0)
+    return int(rates[best].get("r") or 0)
+
+
+def _round_half_up(value: float) -> int:
+    """JavaScript's Math.round, which is half away from zero.
+
+    Python's round() is half to even, so 2.5 becomes 2 there and 3 in the page.
+    One paisa of disagreement between the bill on the phone and the bill in the
+    calendar feed is the kind of thing somebody notices and cannot explain.
+    """
+    return int(Decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
     settings = book.get("settings") or {}
     start = settings.get("startDate") or "0000-01-01"
     last = (date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)).day
 
     total_ml = delivered = skipped = away = off = pending = 0
+    by_rate: dict = {}
     for d in range(1, last + 1):
         key = f"{year:04d}-{month:02d}-{d:02d}"
         if key < start or key > today_key:
@@ -261,6 +301,8 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
         if state == "yes":
             delivered += 1
             total_ml += qty
+            r = rate_for(book, key)
+            by_rate[r] = by_rate.get(r, 0) + qty
         elif state == "skip":
             skipped += 1
         elif state == "away":
@@ -270,8 +312,7 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
         else:
             off += 1
 
-    rate = int(settings.get("rateMinor") or 0)
-    amount = round(total_ml * rate / 1000)
+    amount = sum(_round_half_up(ml * r / 1000) for r, ml in by_rate.items())
     return {"totalMl": total_ml, "delivered": delivered, "skipped": skipped,
             "away": away, "off": off, "pending": pending, "amountMinor": amount}
 
