@@ -108,7 +108,7 @@ def _carry_unknown(raw: dict, known: set) -> dict:
 
 
 KNOWN_SETTINGS = {"t", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
-                  "skipWeekly", "lockAfterDays", "defaultState"}
+                  "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl"}
 KNOWN_TOP = {"settings", "days", "locks", "payments"}
 
 
@@ -132,6 +132,13 @@ def sanitise(book: dict) -> dict:
             "defaultState": (raw_settings.get("defaultState")
                              if raw_settings.get("defaultState") in DEFAULT_STATES else "yes"),
         }
+        # Only written back when the client actually sent them. Forcing a
+        # default in would mean a phone on an older build, which has never heard
+        # of these, answering with False and erasing a choice somebody made --
+        # the exact thing the field-wise merge below exists to prevent.
+        for flag in ("lockChoice", "fullControl"):
+            if flag in raw_settings:
+                settings[flag] = bool(raw_settings[flag])
         if not DAY_RE.match(settings["startDate"]):
             settings["startDate"] = ""
         settings.update(_carry_unknown(raw_settings, KNOWN_SETTINGS))

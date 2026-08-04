@@ -408,5 +408,25 @@ ok("a client that has never heard of payments does not erase them",
    len(M.merge(_a, _old_client)["payments"]) == 1,
    "clients ship before servers, and old clients outlive both")
 
+print("\nSETTINGS — a phone cannot erase a choice it has never heard of")
+# The flags added for locking and full control are only written back when the
+# client actually sent them. Giving them a default would mean an older phone --
+# which does not know they exist -- answering with False and overwriting a
+# choice somebody deliberately made. I introduced exactly that bug writing this
+# and caught it by merging the two shapes together, so it is pinned here.
+_chose = M.sanitise({"settings": {"t": 5, "lockAfterDays": 0, "lockChoice": True}, "days": {}})
+_older = M.sanitise({"settings": {"t": 9, "vendor": "Dairy"}, "days": {}})
+ok("a client that sent the flag has it stored", _chose["settings"]["lockChoice"] is True)
+ok("a client that never sent it does not get a false one",
+   "lockChoice" not in _older["settings"], str(_older["settings"]))
+ok("so an older phone cannot undo a deliberate choice",
+   M.merge(_chose, _older)["settings"].get("lockChoice") is True,
+   "even though the older phone's settings are newer")
+ok("and the same holds for full control",
+   M.merge(M.sanitise({"settings": {"t": 5, "fullControl": True}, "days": {}}),
+           _older)["settings"].get("fullControl") is True)
+ok("full control is stored as a boolean when it is sent",
+   M.sanitise({"settings": {"t": 1, "fullControl": "yes"}, "days": {}})["settings"]["fullControl"] is True)
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)
