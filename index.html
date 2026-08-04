@@ -356,6 +356,15 @@
     </select>
     <p class="hint">A closed month cannot be changed by a stray tap, on any phone sharing this book. You can always unlock one when you genuinely need to.</p>
   </div>
+  <div class="field">
+    <label>Keep a copy on this device</label>
+    <button class="btn ghost" id="btnLocal" type="button">Save this app as a file</button>
+    <p class="hint">Downloads the whole app as one file, with your book already inside it. Open that
+      file any time — no internet, no server, nothing to install. It is a snapshot: days you record
+      here afterwards will not appear in it, so save a fresh one when you want it up to date.</p>
+    <p class="hint" id="localNote" hidden><b>You are using a saved copy.</b> It works entirely offline
+      and keeps its own book, separate from the one in your browser.</p>
+  </div>
   <button class="btn" id="saveSettings">Save</button>
   <button class="btn danger" id="btnReset" style="margin-top:8px">Erase all data</button>
 </div>
@@ -497,13 +506,14 @@ function freshStore(){
     settings: {
       t: Date.now(), vendor: "", qtyMl: 1000, rateMinor: 6000,
       currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
-      skipWeekly: [], lockAfterDays: 0, defaultState: "yes",
+      skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true,
     },
     days: {},
     locks: {},
     sync: null,
   };
 }
+let locksJustDefaulted = false;
 function loadStore(){
   try{
     const raw = localStorage.getItem(STORE_KEY);
@@ -513,10 +523,76 @@ function loadStore(){
     s.settings = Object.assign(f.settings, s.settings || {});
     s.days = s.days || {};
     s.locks = s.locks || {};
+    /* Closing the books used to be off unless you went looking for it, which is
+       the wrong way round for a record people bill from. Books written before
+       that changed are moved onto it once. `lockChoice` is set whenever the
+       setting is actually saved, so somebody who chose "never" on purpose keeps
+       it. No day is touched — only whether a stray tap can change one. */
+    if(!s.settings.lockChoice && Number(s.settings.lockAfterDays || 0) === 0){
+      s.settings.lockAfterDays = 7;
+      s.settings.lockChoice = true;
+      s.settings.t = Date.now();
+      locksJustDefaulted = true;
+    }
     return s;
   }catch(e){ return freshStore(); }
 }
 function saveStore(s){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(s)); }catch(e){} }
+
+/* ---------------- keeping a copy on the device ----------------
+
+   A saved copy opens from file://, which the browser treats as a different
+   place entirely: it has its own storage and cannot see the book kept by the
+   hosted page. So the book travels inside the file rather than being expected
+   to appear on the other side. The copy seeds itself once, on first open, and
+   only when there is nothing there already — opening it twice must never
+   overwrite what you have since written in it. */
+const IS_LOCAL_COPY = location.protocol === "file:";
+const SEED_MARK = "milkbook_seeded_v1";
+
+function buildLocalCopy(){
+  const doc = document.documentElement.cloneNode(true);
+
+  // A saved file has no server, so anything that needs one is removed rather
+  // than left to fail quietly: the worker, the manifest, and the view ping.
+  doc.querySelectorAll('link[rel="manifest"], script[data-count], script[data-seed]')
+     .forEach(el => el.remove());
+
+  const seed = document.createElement("script");
+  seed.setAttribute("data-seed", "1");
+  seed.textContent =
+    "(function(){try{" +
+    "var k=" + JSON.stringify(STORE_KEY) + ",m=" + JSON.stringify(SEED_MARK) + ";" +
+    "if(localStorage.getItem(m))return;" +           // already opened before
+    "localStorage.setItem(m,'1');" +
+    "if(localStorage.getItem(k))return;" +           // it already has a book
+    "localStorage.setItem(k," + JSON.stringify(JSON.stringify(store)) + ");" +
+    "}catch(e){}})();";
+  doc.querySelector("head").appendChild(seed);
+
+  return "<!DOCTYPE html>\n" + doc.outerHTML;
+}
+
+function downloadLocalCopy(){
+  const html = buildLocalCopy();
+  const stamp = ymd(new Date());
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `milkbook-${stamp}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const days = Object.keys(store.days).length;
+  toast(`Saved with ${days} day${days === 1 ? "" : "s"} in it`);
+}
+
+function markLocalCopy(){
+  const el = $("localNote");
+  if(el) el.hidden = false;
+}
 
 const symbolOf = code => (CURRENCIES.find(c => c[0] === code) || ["", "\u20B9"])[1];
 
@@ -873,7 +949,7 @@ function setDay(key, state, qtyMl){
 function editBlocked(key){
   const d = parseYmd(key);
   if(lockInfo(store, d.getFullYear(), d.getMonth(), today()).locked)
-    return `${MONTHS[d.getMonth()]} ${d.getFullYear()} is locked \u2014 unlock it to make changes`;
+    return `${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed. Unlock it above to correct a day.`;
   if(key < store.settings.startDate) return "That day is before you started tracking";
   return null;
 }
@@ -1073,6 +1149,7 @@ $("saveSettings").addEventListener("click", () => {
     currency: $("fCur").value,
     startDate: $("fStart").value || store.settings.startDate,
     lockAfterDays: Math.max(0, parseInt($("fLock").value, 10) || 0),
+    lockChoice: true,
     defaultState: DEFAULT_STATES.some(d => d[0] === $("fDefault").value) ? $("fDefault").value : "yes",
     skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
   };
@@ -1091,8 +1168,8 @@ $("saveSettings").addEventListener("click", () => {
     false,
     { label: "Apply to past months too", run: () => applySettings(next, false) });
 });
-$("btnReset").addEventListener("click", () => {
-  ask("Erase everything?",
+$("btnLocal").addEventListener("click", downloadLocalCopy);
+$("btnReset").addEventListener("click", () => {  ask("Erase everything?",
     "Every day you have recorded on this device will be deleted. This cannot be undone, "
     + "and if you are syncing, the other phones still hold their copy.",
     "Erase all data",
@@ -1356,7 +1433,23 @@ $("btnLock").addEventListener("click", () => {
   viewY = n.getFullYear(); viewM = n.getMonth();
   renderDow(); render(); renderSync();
   if(store.sync) doSync(true);
-  if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  if(locksJustDefaulted){
+    saveStore(store);
+    ask("Past months now close themselves",
+      "A week after a month ends, this book closes it so a stray tap cannot change a bill you have "
+      + "already given someone. Nothing has been altered \u2014 every day reads exactly as it did. "
+      + "When you do need to correct something, unlock the month with the padlock at the top and "
+      + "edit it as normal.",
+      "Got it", () => {}, false,
+      { label: "Turn it off", run: () => {
+          store.settings = Object.assign({}, store.settings,
+            { lockAfterDays: 0, lockChoice: true, t: Date.now() });
+          saveStore(store); render(); queueSync(); toast("Months stay open");
+        } });
+  }
+  if(IS_LOCAL_COPY) markLocalCopy();
+  if("serviceWorker" in navigator && !IS_LOCAL_COPY)
+    navigator.serviceWorker.register("sw.js").catch(() => {});
   document.addEventListener("visibilitychange", () => { if(!document.hidden && store.sync) doSync(true); });
 })();
 </script>
