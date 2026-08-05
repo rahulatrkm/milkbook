@@ -1,13 +1,31 @@
 {
+  "id": "/milkbook/",
   "name": "Milkbook — daily milk delivery tracker",
   "short_name": "Milkbook",
   "description": "Track daily milk delivery in one tap. Exact monthly bill, family sync, phone calendar integration. Free, no signup.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "background_color": "#ffffff",
   "theme_color": "#4338ca",
   "categories": ["utilities", "finance", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Balance and payments",
+      "short_name": "Balance",
+      "description": "What is owed and what has been paid",
+      "url": "./?view=balance"
+    },
+    {
+      "name": "Monthly bill",
+      "short_name": "Bill",
+      "description": "The itemised total to send your vendor",
+      "url": "./?view=bill"
+    }
+  ],
   "icons": [
     {
       "src": "icon.svg",
@@ -20,6 +38,12 @@
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable"
+    },
+    {
+      "src": "icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }

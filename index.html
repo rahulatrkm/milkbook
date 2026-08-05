@@ -442,6 +442,11 @@
       <span class="t"><b>Sync across phones</b><span id="syncSub">Share one code with your family</span></span>
       <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
     </button>
+    <button class="row" id="btnInstall" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2.5"/><path d="M12 7v7m0 0-3-3m3 3 3-3"/><path d="M10.5 18.5h3"/></svg>
+      <span class="t"><b>Install as an app</b><span id="installSub">Own icon, full screen, works offline</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
   </div>
 </div>
 
@@ -596,13 +601,24 @@
     <div class="chips" id="cOpts"></div>
   </div>
   <button class="btn" id="cDownload">Download calendar file</button>
-  <p class="hint" style="margin-top:10px">On iPhone, open the downloaded file and tap <b>Add All</b>. On Android, open it with Google Calendar. This is a one-off snapshot.</p>
+  <p class="hint" style="margin-top:10px">A one-off snapshot. It will not update itself &mdash; use the live subscription below for that.</p>
   <div id="cFeedWrap" style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line)">
     <label style="display:block; font-size:12px; font-weight:600; color:var(--text-2); margin-bottom:5px">Live subscription</label>
-    <div class="code" id="cFeed">turn on sync to get a live link</div>
-    <button class="btn sec" id="cCopyFeed" style="margin-top:10px">Copy subscription link</button>
-    <p class="hint">Subscribe once and your calendar updates itself. iPhone: Settings &rsaquo; Apps &rsaquo; Calendar &rsaquo; Accounts &rsaquo; Add Subscribed Calendar. Google Calendar: Other calendars &rsaquo; From URL.</p>
+    <p class="hint" style="margin:0 0 10px">Subscribe once and your calendar keeps itself up to date.</p>
+    <a class="btn" id="cSubApple" href="#" style="display:block; text-align:center; text-decoration:none">Subscribe on iPhone or iPad</a>
+    <a class="btn sec" id="cSubGoogle" href="#" target="_blank" rel="noopener" style="display:block; text-align:center; text-decoration:none; margin-top:8px">Add to Google Calendar</a>
+    <button class="btn sec" id="cCopyFeed" style="margin-top:8px">Copy link for any other calendar</button>
+    <div class="code" id="cFeed" style="margin-top:10px">turn on sync to get a live link</div>
+    <p class="hint" id="cHelp"></p>
   </div>
+</div>
+
+<!-- install -->
+<div class="sheet" id="shInstall">
+  <div class="grab"></div>
+  <h2>Install Milkbook</h2>
+  <p class="lede">It gets its own icon and opens full screen, with no address bar. Your book stays on the phone and still works with no signal.</p>
+  <div id="installSteps"></div>
 </div>
 
 <!-- sync -->
@@ -1989,6 +2005,47 @@ $("bCopy").addEventListener("click", () => shareBill(true));
 
 /* calendar */
 const calOpts = { away: true, skipped: false, bills: true };
+
+/* Subscribing to a calendar is done differently on every phone, and neither way
+   is "paste this https link somewhere".
+
+   iOS has no user interface for adding a calendar by URL that anyone finds: it
+   is five levels into Settings and the wording moves between releases. It does
+   understand `webcal://`, which opens Calendar straight onto a Subscribe sheet.
+
+   Google Calendar on Android cannot add a calendar by URL at all — the option
+   exists only in the web version. Handing the URL to Google's own add-by-URL
+   page is the one route that works from a phone, and the calendar then appears
+   on every device signed into that account. */
+const feedHttps = () => store.sync ? `${API}/cal/${store.sync}.ics` : "";
+const feedWebcal = () => feedHttps().replace(/^https?:/, "webcal:");
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const IS_ANDROID = /Android/.test(navigator.userAgent);
+
+function renderCalFeed(){
+  const on = !!store.sync;
+  $("cFeed").textContent = on ? feedHttps() : "turn on sync to get a live link";
+  $("cSubApple").href = on ? feedWebcal() : "#";
+  $("cSubGoogle").href = on
+    ? "https://calendar.google.com/calendar/r?cid=" + encodeURIComponent(feedWebcal())
+    : "#";
+  for(const id of ["cSubApple", "cSubGoogle"]){
+    $(id).classList.toggle("hide", !on);
+    $(id).setAttribute("aria-disabled", on ? "false" : "true");
+  }
+  // The button for the phone in your hand goes first.
+  const wrap = $("cFeedWrap");
+  if(IS_ANDROID) wrap.insertBefore($("cSubGoogle"), $("cSubApple"));
+  $("cHelp").textContent = !on
+    ? "Turn on sync first \u2014 the live link belongs to your sync code."
+    : IS_IOS
+      ? "Tap Subscribe when Calendar opens. It refreshes on its own."
+      : IS_ANDROID
+        ? "Google Calendar's app cannot add a calendar by URL, so this hands it to Google in the browser. It then shows up in the app, though Google can take a few hours to fetch it the first time."
+        : "Apple Calendar takes the first button. Anything else \u2014 Outlook, Thunderbird \u2014 wants the link copied.";
+}
+
 $("btnCal").addEventListener("click", () => {
   const w = $("cOpts"); w.innerHTML = "";
   for(const [k, label] of [["bills","Monthly bill reminder"],["away","Away days"],["skipped","Skipped days"]]){
@@ -1998,7 +2055,7 @@ $("btnCal").addEventListener("click", () => {
     c.addEventListener("click", () => { calOpts[k] = !calOpts[k]; c.classList.toggle("on", calOpts[k]); });
     w.appendChild(c);
   }
-  $("cFeed").textContent = store.sync ? `${API}/cal/${store.sync}.ics` : "turn on sync to get a live link";
+  renderCalFeed();
   sheet("shCal");
 });
 $("cDownload").addEventListener("click", () => {
@@ -2013,9 +2070,93 @@ $("cDownload").addEventListener("click", () => {
 });
 $("cCopyFeed").addEventListener("click", async () => {
   if(!store.sync) return toast("Turn on sync first");
-  try{ await navigator.clipboard.writeText(`${API}/cal/${store.sync}.ics`); toast("Link copied"); }
+  try{ await navigator.clipboard.writeText(feedHttps()); toast("Link copied"); }
   catch(e){ toast("Could not copy"); }
 });
+for(const id of ["cSubApple", "cSubGoogle"]){
+  $(id).addEventListener("click", e => {
+    if(!store.sync){ e.preventDefault(); toast("Turn on sync first"); }
+  });
+}
+
+/* ---------------- installing it as an app ----------------
+
+   Chrome hands us an install prompt, but only once its own criteria are met and
+   only if it has not already been dismissed, so it cannot be the only route in.
+   iOS never fires it at all: Safari's Add to Home Screen is manual and there is
+   no API for it. The row is therefore always offered when the app is not
+   already installed, and the sheet spells out the steps for whichever browser
+   is asking. */
+let installPrompt = null;
+const isInstalled = () =>
+  matchMedia("(display-mode: standalone)").matches
+  || matchMedia("(display-mode: minimal-ui)").matches
+  || navigator.standalone === true;
+
+function renderInstallRow(){
+  const hide = isInstalled();
+  $("btnInstall").hidden = hide;
+  if(!hide) $("installSub").textContent = IS_IOS && !installPrompt
+    ? "Add it to your Home Screen"
+    : "Own icon, full screen, works offline";
+}
+
+addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  installPrompt = e;
+  renderInstallRow();
+});
+addEventListener("appinstalled", () => {
+  installPrompt = null;
+  renderInstallRow();
+  sheet(null);
+  toast("Milkbook installed");
+});
+
+const INSTALL_STEPS = () => IS_IOS
+  ? ["Tap the Share button at the bottom of Safari \u2014 the square with an arrow.",
+     "Scroll down and tap <b>Add to Home Screen</b>.",
+     "Tap <b>Add</b>. Milkbook appears with your other apps."]
+  : IS_ANDROID
+    ? ["Tap the \u22ee menu at the top right of Chrome.",
+       "Tap <b>Add to Home screen</b>, or <b>Install app</b> if you see it.",
+       "Confirm. Milkbook appears in your app drawer."]
+    : ["Look for the install icon in the address bar, or open the browser menu.",
+       "Choose <b>Install Milkbook</b>.",
+       "It opens in its own window from then on."];
+
+$("btnInstall").addEventListener("click", async () => {
+  if(installPrompt){
+    // Chrome only lets this be called from a real gesture, and only once.
+    const e = installPrompt;
+    installPrompt = null;
+    e.prompt();
+    const { outcome } = await e.userChoice.catch(() => ({ outcome: "dismissed" }));
+    if(outcome !== "accepted"){ installPrompt = e; renderInstallRow(); }
+    return;
+  }
+  const w = $("installSteps"); w.innerHTML = "";
+  const ol = document.createElement("ol");
+  ol.style.cssText = "margin:0 0 4px; padding-left:20px; line-height:1.7; font-size:14px; color:var(--text-2)";
+  for(const step of INSTALL_STEPS()){
+    const li = document.createElement("li");
+    li.innerHTML = step;
+    ol.appendChild(li);
+  }
+  w.appendChild(ol);
+  sheet("shInstall");
+});
+matchMedia("(display-mode: standalone)").addEventListener("change", renderInstallRow);
+renderInstallRow();
+
+/* A launcher shortcut opens straight onto what it names. It only ever opens a
+   sheet — a shortcut that recorded a day would mean a stray tap on the home
+   screen wrote to the book. */
+{
+  const view = new URLSearchParams(location.search).get("view");
+  if(view === "balance") $("btnBalance").click();
+  else if(view === "bill") $("btnBill").click();
+}
 
 /* ---------------- sync ---------------- */
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
