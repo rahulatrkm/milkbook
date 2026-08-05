@@ -2,7 +2,7 @@
   "id": "/milkbook/",
   "name": "Milkbook — daily milk delivery tracker",
   "short_name": "Milkbook",
-  "description": "Track daily milk delivery in one tap. Exact monthly bill, family sync, phone calendar integration. Free, no signup.",
+  "description": "Track daily milk delivery in one tap. Exact monthly bill, family sync, works offline. Free, no signup.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "./",

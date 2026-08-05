@@ -326,7 +326,7 @@
 <meta property="og:image:alt" content="Milkbook — daily milk delivery tracker" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Milkbook — daily milk delivery tracker" />
-<meta name="twitter:description" content="Track daily milk delivery in one tap. Mark delivered, skipped or away, get an exact monthly bill, sync across your family's phones and subscribe from your calendar." />
+<meta name="twitter:description" content="Track daily milk delivery in one tap. Mark delivered, skipped or away, get an exact monthly bill, and sync across your family's phones." />
 <meta name="twitter:image" content="https://rahulatrkm.github.io/milkbook/og.png" />
 <style>/* baseline: keyboard focus and motion preference */
 :focus-visible{outline:2px solid currentColor;outline-offset:2px}
@@ -430,11 +430,6 @@
     <button class="row" id="btnAway">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5a2.12 2.12 0 0 0-3-3L13 8 4.8 6.2a.5.5 0 0 0-.5.8l3.9 4.9-2 2H3.5a.5.5 0 0 0-.4.8l2 2.6 2.6 2a.5.5 0 0 0 .8-.4v-2.7l2-2 4.9 3.9a.5.5 0 0 0 .8-.5z"/></svg>
       <span class="t"><b>Mark several days</b><span>Set a run of days in one go</span></span>
-      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-    </button>
-    <button class="row" id="btnCal">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
-      <span class="t"><b>Add to phone calendar</b><span>Bill reminders and away days, iOS or Android</span></span>
       <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
     </button>
     <button class="row" id="btnSync">
@@ -588,28 +583,6 @@
   <div class="field">
     <label>Payments</label>
     <div id="pList"></div>
-  </div>
-</div>
-
-<!-- calendar -->
-<div class="sheet" id="shCal">
-  <div class="grab"></div>
-  <h2>Add to phone calendar</h2>
-  <p class="lede">Works with Apple Calendar, Google Calendar and anything else that reads .ics.</p>
-  <div class="field">
-    <label>What to include</label>
-    <div class="chips" id="cOpts"></div>
-  </div>
-  <button class="btn" id="cDownload">Download calendar file</button>
-  <p class="hint" style="margin-top:10px">A one-off snapshot. It will not update itself &mdash; use the live subscription below for that.</p>
-  <div id="cFeedWrap" style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line)">
-    <label style="display:block; font-size:12px; font-weight:600; color:var(--text-2); margin-bottom:5px">Live subscription</label>
-    <p class="hint" style="margin:0 0 10px">Subscribe once and your calendar keeps itself up to date.</p>
-    <a class="btn" id="cSubApple" href="#" style="display:block; text-align:center; text-decoration:none">Subscribe on iPhone or iPad</a>
-    <a class="btn sec" id="cSubGoogle" href="#" target="_blank" rel="noopener" style="display:block; text-align:center; text-decoration:none; margin-top:8px">Add to Google Calendar</a>
-    <button class="btn sec" id="cCopyFeed" style="margin-top:8px">Copy link for any other calendar</button>
-    <div class="code" id="cFeed" style="margin-top:10px">turn on sync to get a live link</div>
-    <p class="hint" id="cHelp"></p>
   </div>
 </div>
 
@@ -1091,88 +1064,6 @@ function paidInMonthMinor(store, y, m){
 
 const fmtMoney = (minor, code) => symbolOf(code) + (minor / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtL = ml => (ml / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 });
-
-/* ---------------- ics ----------------
-   Calendar clients are strict: CRLF endings, folding at 75 octets, and
-   all-day DTEND is exclusive. Getting any of those wrong makes the file
-   import as empty, which looks like the app is broken. */
-function icsEscape(s){ return String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n"); }
-const ICS_ENC = new TextEncoder();
-function icsFold(line){
-  // RFC 5545 folds at 75 octets, not characters, and must not split a
-  // multi-octet character. Currency symbols and dashes make these differ.
-  if(ICS_ENC.encode(line).length <= 75) return line;
-  const segs = [];
-  let cur = "", used = 0, budget = 75;
-  for(const ch of line){
-    const n = ICS_ENC.encode(ch).length;
-    if(used + n > budget){ segs.push(cur); cur = ch; used = n; budget = 74; }
-    else { cur += ch; used += n; }
-  }
-  segs.push(cur);
-  return segs.join("\r\n ");
-}
-const icsDate = key => key.replace(/-/g, "");
-
-function runsOf(store, fromKey, toKey, wanted){
-  const runs = [];
-  let cur = null;
-  for(let k = fromKey; k <= toKey; k = addDays(k, 1)){
-    const st = dayInfo(store, k).state;
-    if(st === wanted){
-      if(cur) cur.end = k; else cur = { start: k, end: k };
-    }else if(cur){ runs.push(cur); cur = null; }
-  }
-  if(cur) runs.push(cur);
-  return runs;
-}
-
-function buildICS(store, opts){
-  const o = Object.assign({ away: true, skipped: false, bills: true, months: 6, now: new Date() }, opts || {});
-  const stamp = o.now.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-  const todayKey = ymd(o.now);
-  const cur = store.settings.currency;
-  const name = store.settings.vendor ? `Milk \u2014 ${store.settings.vendor}` : "Milk";
-
-  const L = [
-    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Milkbook//Milk delivery//EN",
-    "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
-    "X-WR-CALNAME:" + icsEscape(name), "X-WR-TIMEZONE:UTC",
-  ];
-  const ev = (uid, startKey, endExclusiveKey, summary, desc, alarm) => {
-    L.push("BEGIN:VEVENT", "UID:" + uid + "@milkbook", "DTSTAMP:" + stamp,
-      "DTSTART;VALUE=DATE:" + icsDate(startKey), "DTEND;VALUE=DATE:" + icsDate(endExclusiveKey),
-      "SUMMARY:" + icsEscape(summary), "TRANSP:TRANSPARENT");
-    if(desc) L.push("DESCRIPTION:" + icsEscape(desc));
-    if(alarm) L.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + icsEscape(summary), "TRIGGER:-PT9H", "END:VALARM");
-    L.push("END:VEVENT");
-  };
-
-  const first = new Date(o.now.getFullYear(), o.now.getMonth() - (o.months - 1), 1);
-  const fromKey = ymd(first) < store.settings.startDate ? store.settings.startDate : ymd(first);
-  const lastOfThis = keyOf(o.now.getFullYear(), o.now.getMonth(), daysInMonth(o.now.getFullYear(), o.now.getMonth()));
-
-  if(o.away) for(const r of runsOf(store, fromKey, lastOfThis, "away"))
-    ev("away-" + r.start, r.start, addDays(r.end, 1), "No milk \u2014 away", "Delivery paused while away.", false);
-  if(o.skipped) for(const r of runsOf(store, fromKey, lastOfThis, "skip"))
-    ev("skip-" + r.start, r.start, addDays(r.end, 1), "No milk delivered", "Marked as not delivered.", false);
-
-  if(o.bills){
-    for(let i = 0; i < o.months; i++){
-      const d = new Date(o.now.getFullYear(), o.now.getMonth() - i, 1);
-      const y = d.getFullYear(), m = d.getMonth();
-      const s = monthSummary(store, y, m, todayKey);
-      if(s.delivered === 0) continue;
-      const endKey = keyOf(y, m, daysInMonth(y, m));
-      ev("bill-" + y + "-" + pad2(m + 1), endKey, addDays(endKey, 1),
-        `Milk bill ${fmtMoney(s.amountMinor, cur)} \u00b7 ${fmtL(s.totalMl)} L`,
-        `${MONTHS[m]} ${y}\n${s.delivered} deliveries \u00b7 ${fmtL(s.totalMl)} L at ${fmtMoney(store.settings.rateMinor, cur)}/L\nTotal ${fmtMoney(s.amountMinor, cur)}`,
-        true);
-    }
-  }
-  L.push("END:VCALENDAR");
-  return L.map(icsFold).join("\r\n") + "\r\n";
-}
 
 function billText(store, y, m, todayKey){
   const s = monthSummary(store, y, m, todayKey);
@@ -2003,81 +1894,11 @@ async function shareBill(copyOnly){
 $("bShare").addEventListener("click", () => shareBill(false));
 $("bCopy").addEventListener("click", () => shareBill(true));
 
-/* calendar */
-const calOpts = { away: true, skipped: false, bills: true };
-
-/* Subscribing to a calendar is done differently on every phone, and neither way
-   is "paste this https link somewhere".
-
-   iOS has no user interface for adding a calendar by URL that anyone finds: it
-   is five levels into Settings and the wording moves between releases. It does
-   understand `webcal://`, which opens Calendar straight onto a Subscribe sheet.
-
-   Google Calendar on Android cannot add a calendar by URL at all — the option
-   exists only in the web version. Handing the URL to Google's own add-by-URL
-   page is the one route that works from a phone, and the calendar then appears
-   on every device signed into that account. */
-const feedHttps = () => store.sync ? `${API}/cal/${store.sync}.ics` : "";
-const feedWebcal = () => feedHttps().replace(/^https?:/, "webcal:");
+/* Which phone is asking. Used to spell out how to install, since every browser
+   puts that in a different place and iOS has no button for it at all. */
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const IS_ANDROID = /Android/.test(navigator.userAgent);
-
-function renderCalFeed(){
-  const on = !!store.sync;
-  $("cFeed").textContent = on ? feedHttps() : "turn on sync to get a live link";
-  $("cSubApple").href = on ? feedWebcal() : "#";
-  $("cSubGoogle").href = on
-    ? "https://calendar.google.com/calendar/r?cid=" + encodeURIComponent(feedWebcal())
-    : "#";
-  for(const id of ["cSubApple", "cSubGoogle"]){
-    $(id).classList.toggle("hide", !on);
-    $(id).setAttribute("aria-disabled", on ? "false" : "true");
-  }
-  // The button for the phone in your hand goes first.
-  const wrap = $("cFeedWrap");
-  if(IS_ANDROID) wrap.insertBefore($("cSubGoogle"), $("cSubApple"));
-  $("cHelp").textContent = !on
-    ? "Turn on sync first \u2014 the live link belongs to your sync code."
-    : IS_IOS
-      ? "Tap Subscribe when Calendar opens. It refreshes on its own."
-      : IS_ANDROID
-        ? "Google Calendar's app cannot add a calendar by URL, so this hands it to Google in the browser. It then shows up in the app, though Google can take a few hours to fetch it the first time."
-        : "Apple Calendar takes the first button. Anything else \u2014 Outlook, Thunderbird \u2014 wants the link copied.";
-}
-
-$("btnCal").addEventListener("click", () => {
-  const w = $("cOpts"); w.innerHTML = "";
-  for(const [k, label] of [["bills","Monthly bill reminder"],["away","Away days"],["skipped","Skipped days"]]){
-    const c = document.createElement("button");
-    c.className = "chip" + (calOpts[k] ? " on" : "");
-    c.textContent = label;
-    c.addEventListener("click", () => { calOpts[k] = !calOpts[k]; c.classList.toggle("on", calOpts[k]); });
-    w.appendChild(c);
-  }
-  renderCalFeed();
-  sheet("shCal");
-});
-$("cDownload").addEventListener("click", () => {
-  const ics = buildICS(store, calOpts);
-  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "milkbook.ics";
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-  toast("Calendar file downloaded");
-});
-$("cCopyFeed").addEventListener("click", async () => {
-  if(!store.sync) return toast("Turn on sync first");
-  try{ await navigator.clipboard.writeText(feedHttps()); toast("Link copied"); }
-  catch(e){ toast("Could not copy"); }
-});
-for(const id of ["cSubApple", "cSubGoogle"]){
-  $(id).addEventListener("click", e => {
-    if(!store.sync){ e.preventDefault(); toast("Turn on sync first"); }
-  });
-}
 
 /* ---------------- installing it as an app ----------------
 
