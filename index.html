@@ -1830,9 +1830,10 @@ $("btnRestore").addEventListener("click", () => {
   const stash = readStash();
   if(!stash) return;
   ask("Bring back your earlier records?",
-    `The ${stash.days} day${stash.days === 1 ? "" : "s"} this phone held before it joined will be `
-    + `added back into the book. Nothing recorded since is removed \u2014 the two are merged, and `
-    + `where both have the same day the later one stands.`,
+    `The ${stash.days} day${stash.days === 1 ? "" : "s"} and any payments this phone held before `
+    + `it joined will be added back into the book. Nothing recorded since is removed \u2014 the two `
+    + `are merged, and where both have the same day the later one stands. The vendor and price stay `
+    + `as this book has them.`,
     "Bring them back", mergeStashBack);
 });
 $("fullOff").addEventListener("click", () => {
@@ -2341,12 +2342,18 @@ const hasRecords = b => Object.keys(b.days || {}).length > 0
    tap on a dialog. The old one is kept aside so it can be brought back, both
    straight away and long afterwards. */
 const STASH_KEY = "milkbook_replaced_v1";
+// Records are what warrant a question before joining, but a vendor name and a
+// price somebody typed are theirs as well, and were being replaced with nothing
+// to go back to.
+const hasAnything = b => hasRecords(b)
+  || Object.keys((b.settings || {}).at || {}).length > 0;
 function stashBook(){
-  if(!hasRecords(store)) return;
+  if(!hasAnything(store)) return;
   try{
     localStorage.setItem(STASH_KEY, JSON.stringify({
       at: Date.now(),
       days: Object.keys(store.days || {}).length,
+      records: hasRecords(store),
       book: { settings: store.settings, days: store.days, locks: store.locks,
               payments: store.payments, rates: store.rates, sync: store.sync },
     }));
@@ -2381,9 +2388,13 @@ function renderRestore(){
   const stash = readStash();
   const row = $("btnRestore");
   if(!row) return;
-  row.hidden = !stash;
-  if(stash) row.textContent = `Bring back the ${stash.days} day${stash.days === 1 ? "" : "s"} `
-    + `this phone had before joining`;
+  // Offered only when there are records to bring back. Undo on the toast is
+  // what reverses a join outright, settings and all; this route adds your days
+  // to the book you are now on, and must not rename that book's vendor.
+  row.hidden = !(stash && stash.records);
+  if(stash && stash.records) row.textContent = stash.days
+    ? `Bring back the ${stash.days} day${stash.days === 1 ? "" : "s"} this phone had before joining`
+    : "Bring back the payments this phone had before joining";
 }
 
 function adoptBook(code, remote){
