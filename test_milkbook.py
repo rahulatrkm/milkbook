@@ -475,5 +475,29 @@ ok("a rise mid-month splits the month",
    M.month_summary(_mixed, 2026, 9, "2026-09-10")["amountMinor"] == 5 * 6000 + 5 * 8000,
    str(M.month_summary(_mixed, 2026, 9, "2026-09-10")["amountMinor"]))
 
+print("\nA RECORDED DAY COUNTS WHEREVER IT FALLS")
+# The bill skipped everything before the start date, record or no record. A
+# phone that joined a family book kept its own later start, so the family's
+# earlier months sat on the phone and billed as nothing. The page and the
+# mirror both did it, so they agreed on the wrong answer.
+_early = M.sanitise({
+    "settings": {"t": 1, "qtyMl": 1000, "rateMinor": 6000, "startDate": "2026-08-01",
+                 "defaultState": "yes"},
+    "days": {f"2026-06-{d:02d}": {"s": "yes", "t": 1} for d in range(1, 31)},
+})
+_june = M.month_summary(_early, 2026, 6, "2026-08-04")
+ok("30 recorded June days are billed", _june["delivered"] == 30, str(_june["delivered"]))
+ok("and for the real amount", _june["amountMinor"] == 30 * 6000, str(_june["amountMinor"]))
+
+_blank = M.sanitise({
+    "settings": {"t": 1, "qtyMl": 1000, "rateMinor": 6000, "startDate": "2026-08-01",
+                 "defaultState": "yes"},
+    "days": {},
+})
+ok("an unrecorded day before the start is still not billed",
+   M.month_summary(_blank, 2026, 6, "2026-08-04")["delivered"] == 0)
+ok("the start date still governs days nobody touched",
+   M.month_summary(_blank, 2026, 8, "2026-08-04")["delivered"] == 4, "1 to 4 August")
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

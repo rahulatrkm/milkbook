@@ -841,7 +841,12 @@ function monthSummary(store, y, m, todayKey){
   const byRate = new Map();
   for(let d = 1; d <= n; d++){
     const key = keyOf(y, m, d);
-    if(key < start || key > todayKey) continue;
+    if(key > todayKey) continue;
+    // A day somebody actually recorded is a fact, and counts wherever it falls.
+    // Skipping everything before the start date meant a phone that joined a
+    // family book kept its own later start and quietly dropped the family's
+    // earlier months out of every bill — the total simply read as nothing.
+    if(key < start && !store.days[key]) continue;
     const info = dayInfo(store, key);
     if(info.state === "yes"){
       delivered++; totalMl += info.qtyMl;
@@ -1276,7 +1281,7 @@ function render(){  const tk = today();
     const key = keyOf(viewY, viewM, d);
     const info = dayInfo(store, key);
     const btn = document.createElement("button");
-    const future = key > tk, pre = key < store.settings.startDate;
+    const future = key > tk, pre = key < store.settings.startDate && !store.days[key];
     btn.className = "day " + info.state + (future ? " future" : "") + (pre ? " pre" : "")
       + (lock.locked ? " locked" : "") + (key === tk ? " today" : "");
     const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS
@@ -1350,7 +1355,9 @@ function editBlocked(key){
   const d = parseYmd(key);
   if(lockInfo(store, d.getFullYear(), d.getMonth(), today()).locked)
     return `${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed. Unlock it above to correct a day.`;
-  if(key < store.settings.startDate) return BEFORE_START;
+  // Only a day with nothing on it is out of the book's reach. One that already
+  // carries a record is part of the book wherever the start date sits.
+  if(key < store.settings.startDate && !store.days[key]) return BEFORE_START;
   return null;
 }
 
@@ -1480,8 +1487,36 @@ function sheet(id){
     returnFocusTo = null;
   }
 }
-$("scrim").addEventListener("click", () => sheet(null));
-addEventListener("keydown", e => { if(e.key === "Escape" && openSheet) sheet(null); });
+/* Closing the settings sheet used to throw away whatever you had typed without
+   a word, so a vendor name and a price had to be entered a second time. What is
+   compared is the raw contents of the controls, which is what somebody actually
+   changed, rather than the parsed settings. */
+let settingsMark = null;
+function settingsFormRaw(){
+  return JSON.stringify([
+    $("fVendor").value, $("fQty").value, $("fRate").value, $("fCur").value,
+    $("fStart").value, $("fLock").value, $("fDefault").value, $("fFull").value,
+    [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => c.dataset.d).join(","),
+  ]);
+}
+const settingsDirty = () =>
+  openSheet === "shSettings" && settingsMark !== null && settingsFormRaw() !== settingsMark;
+
+/** Close the sheet in front of you, unless it is holding something unsaved. */
+function closeSheet(){
+  if(!settingsDirty()) return sheet(null);
+  ask("Save your changes?",
+    "You have changed settings without saving. Leaving now keeps the old ones and "
+    + "you would have to type this again.",
+    "Save", () => $("saveSettings").click(),
+    false,
+    { label: "Discard changes", run: () => { settingsMark = null; sheet(null); } },
+    // Cancel goes back to the form rather than closing it, with everything
+    // still typed in — openSettings is deliberately not called again.
+    () => sheet("shSettings"));
+}
+$("scrim").addEventListener("click", () => closeSheet());
+addEventListener("keydown", e => { if(e.key === "Escape" && openSheet) closeSheet(); });
 // Every sheet starts closed, so every sheet starts out of the way.
 for(const el of document.querySelectorAll(".sheet")){
   el.setAttribute("inert", "");
@@ -1499,14 +1534,15 @@ for(const el of document.querySelectorAll(".sheet")){
  * about why. A sheet is the same furniture as the rest of the app and cannot
  * fail that way.
  */
-let confirmAction = null, confirmAlt = null;
-function ask(title, body, yesLabel, onYes, danger, alt){
+let confirmAction = null, confirmAlt = null, confirmNo = null;
+function ask(title, body, yesLabel, onYes, danger, alt, onNo){
   $("cfTitle").textContent = title;
   $("cfBody").textContent = body;
   $("cfYes").textContent = yesLabel;
   $("cfYes").className = "btn" + (danger ? " danger" : "");
   confirmAction = onYes;
   confirmAlt = alt || null;
+  confirmNo = onNo || null;
   const altBtn = $("cfAlt");
   altBtn.style.display = alt ? "" : "none";
   if(alt) altBtn.textContent = alt.label;
@@ -1514,17 +1550,22 @@ function ask(title, body, yesLabel, onYes, danger, alt){
 }
 $("cfYes").addEventListener("click", () => {
   const run = confirmAction;
-  confirmAction = confirmAlt = null;
+  confirmAction = confirmAlt = confirmNo = null;
   sheet(null);
   if(run) run();
 });
 $("cfAlt").addEventListener("click", () => {
   const run = confirmAlt && confirmAlt.run;
-  confirmAction = confirmAlt = null;
+  confirmAction = confirmAlt = confirmNo = null;
   sheet(null);
   if(run) run();
 });
-$("cfNo").addEventListener("click", () => { confirmAction = confirmAlt = null; sheet(null); });
+$("cfNo").addEventListener("click", () => {
+  const run = confirmNo;
+  confirmAction = confirmAlt = confirmNo = null;
+  sheet(null);
+  if(run) run();
+});
 
 let toastT = null;
 function toast(m, onUndo){
@@ -1586,6 +1627,7 @@ function openSettings(){
     off.appendChild(c);
   }
   sheet("shSettings");
+  settingsMark = settingsFormRaw();
 }
 $("btnSettings").addEventListener("click", openSettings);
 
@@ -1637,6 +1679,7 @@ function applySettings(next, keepHistory, after){
   if(keepHistory) settleHistory();
   store.settings = stampSettings(store.settings, next);
   if(after) after();
+  settingsMark = null;
   saveStore(store); queueSync(); render(); sheet(null); toast("Saved");
 }
 
@@ -2058,6 +2101,94 @@ function renderSync(){
   $("sCode").textContent = on ? store.sync : "\u2014";
   $("syncSub").textContent = on ? "On \u2014 " + store.sync : "Share one code with your family";
 }
+
+/* Joining a code is a pull.
+
+   It used to push: entering the family's code POSTed this phone's book at it,
+   and the merge came back. A phone that had been used on its own therefore
+   renamed the family's vendor, replaced their price, and moved the shared start
+   date forward to its own — which made every earlier month read as "before this
+   book starts" and vanish from the bill, on everybody's phone. Joining now
+   fetches first and asks before anything of anyone's is written over. */
+async function fetchBook(code){
+  const ctl = new AbortController();
+  const bell = setTimeout(() => ctl.abort(), 15000);
+  try{
+    const res = await fetch(`${API}/api/store/${encodeURIComponent(code)}`, { signal: ctl.signal });
+    if(!res.ok) throw new Error("http " + res.status);
+    return await res.json();
+  }finally{ clearTimeout(bell); }
+}
+
+const hasRecords = b => Object.keys(b.days || {}).length > 0
+  || Object.values(b.payments || {}).some(p => p && !p.del);
+
+function adoptBook(code, remote){
+  store.sync = code;
+  // Through freshStore's defaults so a book written by an older build cannot
+  // arrive missing a setting this one reads.
+  store.settings = Object.assign(freshStore().settings, remote.settings || {});
+  store.days = remote.days || {};
+  store.locks = remote.locks || {};
+  store.payments = remote.payments || {};
+  store.rates = remote.rates || {};
+  saveStore(store); renderSync(); render();
+  toast("Joined \u2014 this phone now shows the family's book");
+}
+
+/* Bringing your own records into somebody else's book.
+
+   Joining takes that book's settings either way. The choice is only about
+   records: a phone joining a household is not renaming the household's vendor,
+   changing their price, or moving the date their book began. Letting it do so
+   is what put a stranger's start date on the shared book and made every earlier
+   month read as nothing on everybody's phone. */
+function contributeMine(code, remote){
+  // What my own days meant is frozen before I take on the family's settings, so
+  // a day I recorded at half a litre is not re-read at the family's litre.
+  for(const rec of Object.values(store.days || {}))
+    if(rec && rec.s === "yes" && rec.q == null) rec.q = store.settings.qtyMl;
+
+  const merged = mergeStores(store, remote);
+  store.sync = code;
+  store.days = merged.days;
+  store.locks = merged.locks;
+  store.payments = merged.payments;
+  store.rates = merged.rates;
+  store.settings = Object.assign(freshStore().settings, remote.settings || {});
+  saveStore(store); renderSync(); render();
+  doSync(false);
+}
+
+function pushMine(code){
+  store.sync = code;
+  saveStore(store); renderSync(); doSync(false);
+}
+
+async function joinCode(code){
+  let remote;
+  try{ remote = await fetchBook(code); }
+  catch(e){ return toast("Could not reach sync \u2014 check the connection and try again"); }
+
+  if(!hasRecords(remote))
+    return ask("Nothing shared on that code yet",
+      `No book has been put on ${code}. Check the code against the phone you got it from. `
+      + `If it is right, this phone's book becomes the shared one.`,
+      "Use it anyway", () => pushMine(code));
+
+  const theirDays = Object.keys(remote.days || {}).length;
+  if(!hasRecords(store)) return adoptBook(code, remote);
+
+  ask("This phone already has records of its own",
+    `That code holds a book with ${theirDays} day${theirDays === 1 ? "" : "s"} recorded. `
+    + `Either way this phone takes on the family's vendor, price and start date. `
+    + `The question is your own records: drop them, or add them to the family's book, `
+    + `where everyone will see them.`,
+    "Use the family's book", () => adoptBook(code, remote),
+    false,
+    { label: "Add my records too", run: () => contributeMine(code, remote) });
+}
+
 $("btnSync").addEventListener("click", () => { renderSync(); sheet("shSync"); });
 $("sCreate").addEventListener("click", () => {
   store.sync = newCode(); saveStore(store); renderSync(); doSync(false); toast("Sync on");
@@ -2065,8 +2196,7 @@ $("sCreate").addEventListener("click", () => {
 $("sJoinBtn").addEventListener("click", () => {
   const parsed = parseCode($("sJoin").value);
   if(parsed.error) return toast(parsed.error);
-  store.sync = parsed.code;
-  saveStore(store); renderSync(); doSync(false);
+  joinCode(parsed.code);
 });
 $("sNow").addEventListener("click", () => doSync(false));
 $("sShareCode").addEventListener("click", async () => {

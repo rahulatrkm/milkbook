@@ -323,9 +323,15 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
 
     total_ml = delivered = skipped = away = off = pending = 0
     by_rate: dict = {}
+    days = book.get("days") or {}
     for d in range(1, last + 1):
         key = f"{year:04d}-{month:02d}-{d:02d}"
-        if key < start or key > today_key:
+        if key > today_key:
+            continue
+        # A recorded day counts wherever it falls. Dropping everything before
+        # the start date meant a phone carrying the family's earlier months but
+        # its own later start date billed them as nothing.
+        if key < start and key not in days:
             continue
         state, qty = day_state(book, key)
         if state == "yes":
