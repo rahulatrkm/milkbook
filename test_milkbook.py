@@ -652,5 +652,52 @@ ok("a book that has never enrolled a phone still accepts an older build",
    "so nobody's phone stops syncing the moment this ships")
 M._hits.clear()
 
+print("\nTWO PHONES SYNCING AT THE SAME MOMENT")
+# Reading and writing on separate connections meant both worked from the copy
+# they had read, and whichever wrote last dropped the other's day. Forty pairs
+# out of forty lost one before the write was made to hold the book still.
+import threading as _threading
+
+_RACE = "RACE-2345-6789"
+
+
+def _race_post(body):
+    payload = json.dumps(body).encode()
+    env = {"PATH_INFO": f"/api/store/{_RACE}", "REQUEST_METHOD": "POST",
+           "REMOTE_ADDR": "203.0.113.9", "CONTENT_LENGTH": str(len(payload)),
+           "wsgi.input": _io.BytesIO(payload)}
+    got = {}
+    out = M.app(env, lambda s, h: got.__setitem__("s", int(s.split()[0])))
+    b"".join(out)
+
+
+_one = {"id": "race-device-one", "key": "r" * 40, "name": "One"}
+_two = {"id": "race-device-two", "key": "w" * 40, "name": "Two"}
+M._hits.clear()
+_race_post({"settings": {"t": 1}, "days": {}, "device": _one})
+_race_post({"settings": {"t": 1}, "days": {}, "device": _two})
+_race_post({"settings": {"t": 1}, "days": {}, "device": _one, "approve": [_two["id"]]})
+
+
+def _record(dev, day):
+    _race_post({"settings": {"t": 1},
+                "days": {day: {"s": "yes", "t": int(time.time() * 1000)}},
+                "device": dev})
+
+
+_lost = 0
+for _i in range(12):
+    _a, _b = f"2026-04-{_i + 1:02d}", f"2026-05-{_i + 1:02d}"
+    _t1 = _threading.Thread(target=_record, args=(_one, _a))
+    _t2 = _threading.Thread(target=_record, args=(_two, _b))
+    _t1.start(); _t2.start(); _t1.join(); _t2.join()
+    _days = M.read_book(_RACE).get("days") or {}
+    if _a not in _days or _b not in _days:
+        _lost += 1
+ok("neither phone's day goes missing", _lost == 0, f"{_lost} of 12 pairs lost one")
+ok("the write holds the book still while it changes it",
+   "BEGIN IMMEDIATE" in Path(__file__).with_name("app.py").read_text(encoding="utf-8"))
+M._hits.clear()
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

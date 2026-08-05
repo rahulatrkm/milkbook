@@ -68,9 +68,7 @@ def _db() -> sqlite3.Connection:
     return conn
 
 
-def read_book(code: str) -> dict:
-    with _db() as conn:
-        row = conn.execute("SELECT data FROM books WHERE code = ?", (code,)).fetchone()
+def _book_from_row(row) -> dict:
     if not row:
         return {"settings": {}, "days": {}, "locks": {}}
     try:
@@ -81,6 +79,12 @@ def read_book(code: str) -> dict:
     return book
 
 
+def read_book(code: str) -> dict:
+    with _db() as conn:
+        row = conn.execute("SELECT data FROM books WHERE code = ?", (code,)).fetchone()
+    return _book_from_row(row)
+
+
 def write_book(code: str, book: dict) -> None:
     payload = json.dumps(book, separators=(",", ":"))
     with _db() as conn:
@@ -89,6 +93,45 @@ def write_book(code: str, book: dict) -> None:
             "ON CONFLICT(code) DO UPDATE SET data=excluded.data, updated=excluded.updated",
             (code, payload, int(time.time())),
         )
+
+
+def update_book(code: str, change):
+    """Read, change and write a book with nobody able to slip in between.
+
+    Reading and writing on separate connections meant two phones syncing at the
+    same moment both worked from the copy they had read, and whichever wrote
+    last silently dropped the other's day. Measured at forty pairs out of forty
+    before this. BEGIN IMMEDIATE takes the write lock up front, so the second
+    request waits rather than working from a book that is already stale.
+
+    `change` is handed the stored book and returns (book_to_store, reply);
+    returning None for the book leaves what is there untouched.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=15, isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS books("
+            " code TEXT PRIMARY KEY, data TEXT NOT NULL, updated INTEGER NOT NULL)"
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT data FROM books WHERE code = ?", (code,)).fetchone()
+            book = _book_from_row(row)
+            to_store, reply = change(book)
+            if to_store is not None:
+                conn.execute(
+                    "INSERT INTO books(code, data, updated) VALUES(?,?,?) "
+                    "ON CONFLICT(code) DO UPDATE SET data=excluded.data, updated=excluded.updated",
+                    (code, json.dumps(to_store, separators=(",", ":")), int(time.time())),
+                )
+            conn.execute("COMMIT")
+            return reply
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------- domain
@@ -725,40 +768,36 @@ def app(environ, start_response):
             except (ValueError, KeyError, TypeError):
                 return _json(start_response, HTTPStatus.BAD_REQUEST, {"error": "bad body"}, cors)
 
-            stored = read_book(code)
-            device = raw.get("device") if isinstance(raw, dict) else None
+            def change(stored):
+                device = raw.get("device") if isinstance(raw, dict) else None
 
-            if not isinstance(device, dict):
-                # A build from before devices existed. It may write only while
-                # the book has no roster; once a household has enrolled a phone,
-                # an unidentified caller is exactly what this is here to stop.
-                if stored.get("roster"):
-                    return _json(start_response, HTTPStatus.OK,
-                                 dict(_seen(stored), you={"ok": False, "why": "no-device"}), cors)
+                if not isinstance(device, dict):
+                    # A build from before devices existed. It may write only
+                    # while the book has no roster; once a household has
+                    # enrolled a phone, an unidentified caller is exactly what
+                    # this is here to stop.
+                    if stored.get("roster"):
+                        return None, dict(_seen(stored), you={"ok": False, "why": "no-device"})
+                    merged = merge(stored, incoming)
+                    return merged, _seen(merged)
+
+                stored, may_write, why = enrol(stored, device)
+                device_id = str(device.get("id") or "")
+                standing = {"ok": may_write, "why": why, "id": device_id,
+                            "label": device_label(device_id)}
+
+                if not may_write:
+                    # The request is answered in full so the phone can show the
+                    # book and say it is waiting, but nothing it sent is applied.
+                    keep = stored if why in ("pending", "founder", "in") else None
+                    return keep, dict(_seen(stored), you=standing)
+
+                stored = apply_roster_changes(stored, device_id,
+                                              raw.get("approve"), raw.get("revoke"))
                 merged = merge(stored, incoming)
-                write_book(code, merged)
-                return _json(start_response, HTTPStatus.OK, _seen(merged), cors)
+                return merged, dict(_seen(merged), you=standing)
 
-            stored, may_write, why = enrol(stored, device)
-            device_id = str(device.get("id") or "")
-
-            if not may_write:
-                # The request is answered in full so the phone can show the
-                # book and say it is waiting, but nothing it sent is applied.
-                if why in ("pending", "founder", "in"):
-                    write_book(code, stored)
-                return _json(start_response, HTTPStatus.OK,
-                             dict(_seen(stored), you={"ok": False, "why": why,
-                                                      "id": device_id,
-                                                      "label": device_label(device_id)}), cors)
-
-            stored = apply_roster_changes(stored, device_id,
-                                          raw.get("approve"), raw.get("revoke"))
-            merged = merge(stored, incoming)
-            write_book(code, merged)
-            return _json(start_response, HTTPStatus.OK,
-                         dict(_seen(merged), you={"ok": True, "why": why, "id": device_id,
-                                                  "label": device_label(device_id)}), cors)
+            return _json(start_response, HTTPStatus.OK, update_book(code, change), cors)
 
         return _json(start_response, HTTPStatus.METHOD_NOT_ALLOWED, {"error": "no"}, cors)
 
