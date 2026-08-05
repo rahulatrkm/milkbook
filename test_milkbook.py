@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 
 os.environ["MILKBOOK_DB"] = os.path.join(tempfile.mkdtemp(), "test.db")
@@ -244,7 +245,13 @@ _junk = M.sanitise({"settings": {}, **{f"junk{i}": i for i in range(200)}})
 ok("carried-through data is bounded",
    len(_junk) <= len(M.KNOWN_TOP) + 20, f"{len(_junk)} keys, {len(M.KNOWN_TOP)} known")
 ok("and the known sections are all still there",
-   M.KNOWN_TOP <= set(_junk), str(M.KNOWN_TOP - set(_junk)))
+   (M.KNOWN_TOP - {"roster"}) <= set(_junk), str(M.KNOWN_TOP - {"roster"} - set(_junk)))
+# The roster is the one section a client does not get to send. It is the list of
+# phones allowed to write, so accepting one from the body would let any phone
+# write itself an invitation.
+ok("a roster in the body is ignored, not stored",
+   "roster" not in M.sanitise({"settings": {}, "days": {},
+                               "roster": {"evil": {"h": "x", "ok": True}}}))
 ok("an oversized unknown field is not carried",
    "big" not in M.sanitise({"settings": {}, "big": "x" * 9000}))
 
@@ -498,6 +505,152 @@ ok("an unrecorded day before the start is still not billed",
    M.month_summary(_blank, 2026, 6, "2026-08-04")["delivered"] == 0)
 ok("the start date still governs days nobody touched",
    M.month_summary(_blank, 2026, 8, "2026-08-04")["delivered"] == 4, "1 to 4 August")
+
+print("\nRATE LIMITS A CALLER CANNOT CHOOSE FOR ITSELF")
+# The bucket was the first entry of X-Forwarded-For, which is whatever the
+# caller wrote before any proxy saw the request. Measured: 400 of 400 got
+# through a limit of 90 just by changing that header each time.
+import io as _io
+
+
+def _call(headers=None, path="/api/store/AAAA-BBBB-CCCC"):
+    env = {"PATH_INFO": path, "REQUEST_METHOD": "GET", "REMOTE_ADDR": "203.0.113.9",
+           "wsgi.input": _io.BytesIO(b""), "CONTENT_LENGTH": "0"}
+    env.update(headers or {})
+    got = {}
+    body = M.app(env, lambda s, h: got.__setitem__("status", int(s.split()[0])))
+    b"".join(body)
+    return got["status"]
+
+
+def _allowed(make, n=400, path="/api/store/AAAA-BBBB-CCCC"):
+    M._hits.clear()
+    return sum(1 for i in range(n) if _call(make(i), path) != 429)
+
+
+ok("an honest caller gets the limit it is given",
+   _allowed(lambda i: {"HTTP_X_FORWARDED_FOR": "198.51.100.7, 172.16.0.1"}) == M.RATE_LIMIT)
+ok("rewriting the front of the chain buys nothing",
+   _allowed(lambda i: {"HTTP_X_FORWARDED_FOR": f"10.0.0.{i % 256}, 172.16.0.1"}) == M.RATE_LIMIT,
+   "the last hop is written by the proxy, not the caller")
+ok("forging every address header still hits the per-book ceiling",
+   _allowed(lambda i: {"HTTP_CF_CONNECTING_IP": f"10.0.0.{i % 256}",
+                       "HTTP_TRUE_CLIENT_IP": f"10.1.0.{i % 256}",
+                       "HTTP_X_FORWARDED_FOR": f"10.2.0.{i % 256}"}) == M.CODE_RATE_LIMIT,
+   "no header can widen a single book's ceiling")
+M._hits.clear()
+ok("one household cannot throttle another",
+   sum(1 for i in range(300)
+       if _call({"HTTP_CF_CONNECTING_IP": f"10.0.0.{i % 256}"},
+                f"/api/store/{'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[i % 32]}AAA-BBBB-CCCC") != 429) == 300)
+ok("Cloudflare's header is preferred over a chain the caller can write into",
+   M.client_key({"HTTP_CF_CONNECTING_IP": "9.9.9.9",
+                 "HTTP_X_FORWARDED_FOR": "1.1.1.1, 2.2.2.2"}) == "9.9.9.9")
+ok("junk in a trusted header falls through rather than making a new bucket",
+   M.client_key({"HTTP_CF_CONNECTING_IP": "not-an-address",
+                 "HTTP_X_FORWARDED_FOR": "1.1.1.1, 2.2.2.2"}) == "2.2.2.2")
+ok("with no headers at all it counts the connection itself",
+   M.client_key({"REMOTE_ADDR": "203.0.113.9"}) == "203.0.113.9")
+M._hits.clear()
+
+print("\nWHAT A SYNC CODE IS WORTH GUESSING")
+_alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+ok("the alphabet leaves out the characters people misread",
+   not any(c in _alphabet for c in "OI01"))
+ok("a code is 12 characters from 32, so about 60 bits",
+   len(_alphabet) == 32 and M.CODE_RE.match("ABCD-EFGH-JKLM") is not None)
+ok("lower case and stray punctuation are refused, not guessed at",
+   M.CODE_RE.match("abcd-efgh-jklm") is None and M.CODE_RE.match("ABCD-EFGH-JKL0") is None)
+ok("a path that is not a code never reaches the store",
+   _call(path="/api/store/../../etc/passwd") == 400)
+ok("nor does one with a wildcard in it", _call(path="/api/store/%2A") == 400)
+
+print("\nONLY PHONES THE HOUSEHOLD LET IN CAN CHANGE THE BOOK")
+# The code used to be the whole key: anyone it was forwarded to could rewrite
+# months of somebody's records. A phone now has to be let in by one already on
+# the book before anything it sends is applied.
+_BOOK = "WXYZ-2345-6789"
+
+
+def _post(body, code=_BOOK):
+    payload = json.dumps(body).encode()
+    env = {"PATH_INFO": f"/api/store/{code}", "REQUEST_METHOD": "POST",
+           "REMOTE_ADDR": "203.0.113.9", "CONTENT_LENGTH": str(len(payload)),
+           "wsgi.input": _io.BytesIO(payload)}
+    got = {}
+    body_out = M.app(env, lambda s, h: got.__setitem__("status", int(s.split()[0])))
+    return got["status"], json.loads(b"".join(body_out).decode())
+
+
+def _day(key, state):
+    return {"settings": {"t": 1}, "days": {key: {"s": state, "t": int(time.time() * 1000)}}}
+
+
+M._hits.clear()
+_founder = {"id": "founder-device-1", "key": "k" * 40, "name": "Mum's phone"}
+_stranger = {"id": "stranger-device", "key": "z" * 40, "name": "Someone else"}
+
+_st, _r = _post(dict(_day("2026-06-01", "yes"), device=_founder))
+ok("the first phone on a new code founds the book", _r["you"]["ok"] and _r["you"]["why"] == "founder")
+ok("and its records are kept", "2026-06-01" in _r["days"])
+
+_st, _r = _post(dict(_day("2026-06-02", "skip"), device=_stranger))
+ok("a phone nobody let in is told it is waiting",
+   _r["you"]["ok"] is False and _r["you"]["why"] == "pending")
+ok("and nothing it sent is written", "2026-06-02" not in _r["days"])
+ok("but it can still read the book, so nobody is ever locked out of their own records",
+   "2026-06-01" in _r["days"])
+ok("it shows up on the roster as waiting",
+   _r["roster"][_stranger["id"]]["ok"] is False)
+ok("both phones can show the same number to check against each other",
+   _r["roster"][_stranger["id"]]["label"] == M.device_label(_stranger["id"]),
+   _r["roster"][_stranger["id"]]["label"])
+
+# A waiting phone must not be able to let itself in.
+_st, _r = _post(dict(_day("2026-06-03", "skip"), device=_stranger,
+                     approve=[_stranger["id"]]))
+ok("a waiting phone cannot approve itself", _r["roster"][_stranger["id"]]["ok"] is False)
+ok("nor slip a record in while trying", "2026-06-03" not in _r["days"])
+
+# Nor claim to be a phone that was let in.
+_st, _r = _post(dict(_day("2026-06-04", "skip"),
+                     device={"id": _founder["id"], "key": "wrong-key-" + "q" * 30,
+                             "name": "Impostor"}))
+ok("claiming another phone's name without its secret is refused",
+   _r["you"]["ok"] is False and _r["you"]["why"] == "wrong-key")
+ok("and writes nothing", "2026-06-04" not in _r["days"])
+ok("and does not rename the phone it was pretending to be",
+   _r["roster"][_founder["id"]]["n"] == "Mum's phone")
+
+# The founder lets it in, and only then does its work count.
+_st, _r = _post(dict(_day("2026-06-05", "yes"), device=_founder, approve=[_stranger["id"]]))
+ok("a phone already on the book can let another in", _r["roster"][_stranger["id"]]["ok"] is True)
+_st, _r = _post(dict(_day("2026-06-06", "skip"), device=_stranger))
+ok("once let in, its records are kept", "2026-06-06" in _r["days"] and _r["you"]["ok"])
+
+# Removing a phone takes its write access away again.
+_st, _r = _post(dict(_day("2026-06-07", "yes"), device=_founder, revoke=[_stranger["id"]]))
+ok("a phone can be removed", _stranger["id"] not in _r["roster"])
+_st, _r = _post(dict(_day("2026-06-08", "skip"), device=_stranger))
+ok("and is waiting again, not writing", "2026-06-08" not in _r["days"])
+
+ok("the last phone on a book cannot remove itself and strand it",
+   _post(dict(_day("2026-06-09", "yes"), device=_founder,
+              revoke=[_founder["id"]]))[1]["roster"].get(_founder["id"], {}).get("ok") is True)
+
+# A build from before any of this existed must not walk past the gate.
+_st, _r = _post(_day("2026-06-10", "skip"))
+ok("a caller that identifies no device at all is refused on an enrolled book",
+   _r["you"]["ok"] is False and _r["you"]["why"] == "no-device")
+ok("and writes nothing", "2026-06-10" not in _r["days"])
+
+ok("no device secret ever leaves the server",
+   all("h" not in entry for entry in _r["roster"].values())
+   and "k" * 40 not in json.dumps(_r))
+ok("a book that has never enrolled a phone still accepts an older build",
+   _post(_day("2026-06-11", "yes"), code="2345-6789-WXYZ")[1]["days"].get("2026-06-11") is not None,
+   "so nobody's phone stops syncing the moment this ships")
+M._hits.clear()
 
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

@@ -12,6 +12,9 @@ different days on different phones both keep their edits.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import io
 import json
 import os
 import re
@@ -35,8 +38,9 @@ MAX_DAYS = 20_000
 MAX_MONTHS = 1_200
 MAX_PAYMENTS = 20_000
 PAYMENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
-RATE_LIMIT = 90          # requests
+RATE_LIMIT = 90          # requests per caller
 RATE_WINDOW = 60         # seconds
+CODE_RATE_LIMIT = 120    # requests per book, which no header can widen
 
 ALLOWED_ORIGINS = {
     "https://rahulatrkm.github.io",
@@ -110,7 +114,18 @@ def _carry_unknown(raw: dict, known: set) -> dict:
 
 KNOWN_SETTINGS = {"t", "at", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
                   "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl"}
-KNOWN_TOP = {"settings", "days", "locks", "payments", "rates"}
+# The roster is the server's, not the client's: it is never read out of an
+# incoming body, only changed through approve/revoke by a device already in it.
+# That way a phone that has not been let in cannot write itself an invitation.
+KNOWN_TOP = {"settings", "days", "locks", "payments", "rates", "roster"}
+# Envelope, not book. These carry the caller's own credential, so letting the
+# unknown-field rule sweep them up would store a device secret in the book and
+# hand it back to anyone holding the code — which is everything this guards.
+ENVELOPE = {"device", "approve", "revoke"}
+NEVER_STORE = KNOWN_TOP | ENVELOPE
+DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+DEVICE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
+MAX_DEVICES = 50
 
 
 def sanitise(book: dict) -> dict:
@@ -222,7 +237,108 @@ def sanitise(book: dict) -> dict:
             }
 
     return {"settings": settings, "days": days, "locks": locks, "payments": payments,
-            "rates": rates, **_carry_unknown(book, KNOWN_TOP)}
+            "rates": rates, **_carry_unknown(book, NEVER_STORE)}
+
+
+# ------------------------------------------------------------------- devices
+def _hash_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def device_label(device_id: str) -> str:
+    """A short number both phones can show, so nobody approves blind.
+
+    Derived from the id rather than sent alongside it, so what the joining phone
+    displays and what the approving phone displays cannot disagree.
+    """
+    digest = hashlib.sha256(("milkbook-label:" + device_id).encode()).hexdigest()
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(alphabet[int(digest[i * 2:i * 2 + 2], 16) % 32] for i in range(4))
+
+
+def enrol(book: dict, device: dict) -> tuple[dict, bool, str]:
+    """Place a device in the book's roster and say whether it may write.
+
+    The first device on a book that has no roster founds it. Everyone after
+    that arrives pending and stays pending until somebody already in the roster
+    lets them in, so a code passed on to the wrong person is enough to read a
+    household's book but never to change it.
+    """
+    roster = book.get("roster")
+    device_id = str(device.get("id") or "")
+    key = str(device.get("key") or "")
+    name = str(device.get("name") or "A phone")[:40]
+    if not DEVICE_ID_RE.match(device_id) or not DEVICE_KEY_RE.match(key):
+        return book, False, "bad-device"
+
+    digest = _hash_key(key)
+    if not isinstance(roster, dict) or not roster:
+        book["roster"] = {device_id: {"h": digest, "n": name, "ok": True,
+                                      "t": int(time.time() * 1000), "by": None}}
+        return book, True, "founder"
+
+    entry = roster.get(device_id)
+    if entry is None:
+        if len(roster) >= MAX_DEVICES:
+            return book, False, "too-many"
+        roster[device_id] = {"h": digest, "n": name, "ok": False,
+                             "t": int(time.time() * 1000), "by": None}
+        return book, False, "pending"
+
+    # An id that is already taken has to prove it owns the secret, or anyone
+    # could name an approved device and inherit its permission.
+    if not hmac.compare_digest(str(entry.get("h") or ""), digest):
+        return book, False, "wrong-key"
+    entry["n"] = name
+    entry["t"] = int(time.time() * 1000)
+    return book, bool(entry.get("ok")), "in" if entry.get("ok") else "pending"
+
+
+def apply_roster_changes(book: dict, actor: str, approve, revoke) -> dict:
+    """Only a device already approved may let another in or put it out."""
+    roster = book.get("roster") or {}
+    if not roster.get(actor, {}).get("ok"):
+        return book
+    now = int(time.time() * 1000)
+    for device_id in (approve or [])[:MAX_DEVICES]:
+        entry = roster.get(str(device_id))
+        if entry is not None and not entry.get("ok"):
+            entry["ok"] = True
+            entry["by"] = actor
+            entry["t"] = now
+    for device_id in (revoke or [])[:MAX_DEVICES]:
+        device_id = str(device_id)
+        # Removing the last approved device would leave a book nobody can write
+        # to, and reading is not enough to keep a household going.
+        if device_id in roster:
+            remaining = [k for k, v in roster.items()
+                         if v.get("ok") and k != device_id]
+            if roster[device_id].get("ok") and not remaining:
+                continue
+            roster.pop(device_id)
+    book["roster"] = roster
+    return book
+
+
+def public_roster(book: dict) -> dict:
+    """What a phone is allowed to see: who is on the book, never their secrets."""
+    out = {}
+    for device_id, entry in (book.get("roster") or {}).items():
+        out[device_id] = {"n": entry.get("n") or "A phone", "ok": bool(entry.get("ok")),
+                          "t": int(entry.get("t") or 0), "label": device_label(device_id)}
+    return out
+
+
+def _seen(book: dict) -> dict:
+    """The book as a phone may see it: the roster without the hashed secrets.
+
+    Every reply goes through here, so a device secret cannot leave the server by
+    being forgotten on one path.
+    """
+    out = {k: v for k, v in book.items() if k != "roster"}
+    if book.get("roster"):
+        out["roster"] = public_roster(book)
+    return out
 
 
 def merge(a: dict, b: dict) -> dict:
@@ -266,15 +382,20 @@ def merge(a: dict, b: dict) -> dict:
                 out[key] = y if (y.get("t") or 0) > (x.get("t") or 0) else x
         return out
 
-    return {
+    merged = {
         "settings": settings,
         "days": newest(a.get("days") or {}, b.get("days") or {}),
         "locks": newest(a.get("locks") or {}, b.get("locks") or {}),
         "payments": newest(a.get("payments") or {}, b.get("payments") or {}),
         "rates": newest(a.get("rates") or {}, b.get("rates") or {}),
-        **_carry_unknown(a, KNOWN_TOP),
-        **_carry_unknown(b, KNOWN_TOP),
+        **_carry_unknown(a, NEVER_STORE),
+        **_carry_unknown(b, NEVER_STORE),
     }
+    # The roster is only ever the stored one. It is not merged from the body,
+    # because the body is the one thing an unapproved phone controls.
+    if isinstance(a.get("roster"), dict):
+        merged["roster"] = a["roster"]
+    return merged
 
 
 def day_state(book: dict, key: str) -> tuple[str, int]:
@@ -472,18 +593,41 @@ def build_ics(book: dict, now: datetime | None = None, months: int = 6) -> str:
 _hits: dict[str, deque] = defaultdict(deque)
 
 
-def _rate_ok(ip: str) -> bool:
+def _rate_ok(key: str, limit: int = RATE_LIMIT) -> bool:
     now = time.time()
-    bucket = _hits[ip]
+    bucket = _hits[key]
     while bucket and now - bucket[0] > RATE_WINDOW:
         bucket.popleft()
-    if len(bucket) >= RATE_LIMIT:
+    if len(bucket) >= limit:
         return False
     bucket.append(now)
     if len(_hits) > 8000:
-        for key in [k for k, v in _hits.items() if not v][:4000]:
-            _hits.pop(key, None)
+        for k in [k for k, v in _hits.items() if not v][:4000]:
+            _hits.pop(k, None)
     return True
+
+
+_IP_RE = re.compile(r"^[0-9a-fA-F:.]{3,45}$")
+
+
+def client_key(environ) -> str:
+    """Who to count a request against.
+
+    The first entry of X-Forwarded-For is whatever the caller wrote before any
+    proxy saw it, so counting against it gave anyone a fresh bucket per request:
+    measured at 400 of 400 getting through a limit of 90. Only values a proxy
+    sets are any use — Cloudflare's own header, or failing that the last entry
+    in the chain, which is written by the hop nearest to us and is the one part
+    the caller cannot reach past.
+    """
+    for name in ("HTTP_CF_CONNECTING_IP", "HTTP_TRUE_CLIENT_IP"):
+        value = (environ.get(name) or "").strip()
+        if _IP_RE.match(value):
+            return value
+    chain = [p.strip() for p in (environ.get("HTTP_X_FORWARDED_FOR") or "").split(",") if p.strip()]
+    if chain and _IP_RE.match(chain[-1]):
+        return chain[-1]
+    return environ.get("REMOTE_ADDR", "?")
 
 
 def _cors(origin: str | None) -> list[tuple[str, str]]:
@@ -521,8 +665,7 @@ def app(environ, start_response):
     method = environ.get("REQUEST_METHOD", "GET").upper()
     origin = environ.get("HTTP_ORIGIN")
     cors = _cors(origin)
-    forwarded = environ.get("HTTP_X_FORWARDED_FOR", "")
-    ip = forwarded.split(",")[0].strip() or environ.get("REMOTE_ADDR", "?")
+    ip = client_key(environ)
 
     if method == "OPTIONS":
         return _reply(start_response, HTTPStatus.NO_CONTENT, b"", "text/plain", cors)
@@ -545,6 +688,8 @@ def app(environ, start_response):
         code = path[len("/cal/"):-len(".ics")].upper()
         if not CODE_RE.match(code):
             return _json(start_response, HTTPStatus.BAD_REQUEST, {"error": "bad code"}, cors)
+        if not _rate_ok("code:" + code, CODE_RATE_LIMIT):
+            return _json(start_response, HTTPStatus.TOO_MANY_REQUESTS, {"error": "slow down"}, cors)
         ics = build_ics(read_book(code)).encode()
         return _reply(start_response, HTTPStatus.OK, ics,
                       "text/calendar; charset=utf-8",
@@ -555,9 +700,16 @@ def app(environ, start_response):
         code = path[len("/api/store/"):].upper()
         if not CODE_RE.match(code):
             return _json(start_response, HTTPStatus.BAD_REQUEST, {"error": "bad code"}, cors)
+        # A ceiling on one book that no header can widen, so however a caller
+        # dresses itself up it cannot sit on somebody's book all day.
+        if not _rate_ok("code:" + code, CODE_RATE_LIMIT):
+            return _json(start_response, HTTPStatus.TOO_MANY_REQUESTS, {"error": "slow down"}, cors)
 
         if method == "GET":
-            return _json(start_response, HTTPStatus.OK, read_book(code), cors)
+            # Reading stays open to anyone holding the code. It is the only way
+            # back to a book when every approved phone has been lost, and a
+            # household losing its records is the worse failure of the two.
+            return _json(start_response, HTTPStatus.OK, _seen(read_book(code)), cors)
 
         if method == "POST":
             try:
@@ -568,13 +720,45 @@ def app(environ, start_response):
                 return _json(start_response, HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                              {"error": "body too large"}, cors)
             try:
-                incoming = sanitise(json.loads(environ["wsgi.input"].read(length)))
+                raw = json.loads(environ["wsgi.input"].read(length))
+                incoming = sanitise(raw)
             except (ValueError, KeyError, TypeError):
                 return _json(start_response, HTTPStatus.BAD_REQUEST, {"error": "bad body"}, cors)
 
-            merged = merge(read_book(code), incoming)
+            stored = read_book(code)
+            device = raw.get("device") if isinstance(raw, dict) else None
+
+            if not isinstance(device, dict):
+                # A build from before devices existed. It may write only while
+                # the book has no roster; once a household has enrolled a phone,
+                # an unidentified caller is exactly what this is here to stop.
+                if stored.get("roster"):
+                    return _json(start_response, HTTPStatus.OK,
+                                 dict(_seen(stored), you={"ok": False, "why": "no-device"}), cors)
+                merged = merge(stored, incoming)
+                write_book(code, merged)
+                return _json(start_response, HTTPStatus.OK, _seen(merged), cors)
+
+            stored, may_write, why = enrol(stored, device)
+            device_id = str(device.get("id") or "")
+
+            if not may_write:
+                # The request is answered in full so the phone can show the
+                # book and say it is waiting, but nothing it sent is applied.
+                if why in ("pending", "founder", "in"):
+                    write_book(code, stored)
+                return _json(start_response, HTTPStatus.OK,
+                             dict(_seen(stored), you={"ok": False, "why": why,
+                                                      "id": device_id,
+                                                      "label": device_label(device_id)}), cors)
+
+            stored = apply_roster_changes(stored, device_id,
+                                          raw.get("approve"), raw.get("revoke"))
+            merged = merge(stored, incoming)
             write_book(code, merged)
-            return _json(start_response, HTTPStatus.OK, merged, cors)
+            return _json(start_response, HTTPStatus.OK,
+                         dict(_seen(merged), you={"ok": True, "why": why, "id": device_id,
+                                                  "label": device_label(device_id)}), cors)
 
         return _json(start_response, HTTPStatus.METHOD_NOT_ALLOWED, {"error": "no"}, cors)
 

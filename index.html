@@ -581,9 +581,19 @@
   </div>
 
   <div class="field">
-    <label>Payments</label>
+    <label id="pListLabel">Payments</label>
     <div id="pList"></div>
+    <button class="btn sec" id="pAll" style="margin-top:10px">See every payment</button>
   </div>
+</div>
+
+<!-- payment history -->
+<div class="sheet" id="shHistory">
+  <div class="grab"></div>
+  <h2>Payment history</h2>
+  <p class="lede">Every payment recorded in this book, newest first.</p>
+  <div class="billtotal"><span>Paid in total</span><b class="num" id="hTotal">—</b></div>
+  <div id="hList" style="margin-top:16px"></div>
 </div>
 
 <!-- install -->
@@ -607,11 +617,16 @@
   <div id="syncOn" style="display:none">
     <div class="code" id="sCode">—</div>
     <p class="hint" style="text-align:center; margin-bottom:14px">Enter this code on another phone to share the same book.</p>
+    <div id="sWaiting" hidden style="margin-bottom:14px; padding:12px; border-radius:11px; background:var(--warn-soft)">
+      <b style="display:block; font-size:14px">This phone is waiting to be let in</b>
+      <p class="hint" style="margin:4px 0 0">Open Milkbook on a phone already on this book and let this one in. It will show <b id="sMyLabel">—</b>. Until then you can read the book, but changes made here stay on this phone.</p>
+    </div>
+    <div id="sPeople" style="margin-bottom:14px"></div>
     <button class="btn" id="sNow">Sync now</button>
     <button class="btn sec" id="sShareCode" style="margin-top:8px">Share code</button>
     <button class="btn danger" id="sLeave" style="margin-top:8px">Stop syncing on this device</button>
   </div>
-  <p class="hint" style="margin-top:16px">Anyone with the code can read and edit the book, so only share it with your household. No account, no email, no tracking.</p>
+  <p class="hint" style="margin-top:16px">Anyone with the code can read the book, so only share it with your household. Changing it needs a phone the household has let in. No account, no email, no tracking.</p>
 </div>
 
 <!-- confirm -->
@@ -1159,22 +1174,81 @@ function renderPayments(){
       : "Everything billed since you started, against everything you have paid.";
 
   const list = $("pList");
-  const items = livePayments(store).sort((a, b) => (b.on || "").localeCompare(a.on || ""));
+  // Only the month you are looking at. The running totals above are for the
+  // whole book, but a list of every payment ever made buries this month's.
+  const all = livePayments(store).sort((a, b) => (b.on || "").localeCompare(a.on || ""));
+  const prefix = `${viewY}-${pad2(viewM + 1)}`;
+  const items = all.filter(p => (p.on || "").startsWith(prefix));
+  const monthTotal = items.reduce((sum, p) => sum + p.a, 0);
+  $("pListLabel").textContent = items.length
+    ? `Payments in ${MONTHS[viewM]} ${viewY} \u00b7 ${fmtMoney(monthTotal, cur)}`
+    : `Payments in ${MONTHS[viewM]} ${viewY}`;
+  $("pAll").hidden = all.length === 0;
   if(!items.length){
-    list.innerHTML = `<div class="empty">No payments recorded yet.</div>`;
+    list.innerHTML = all.length
+      ? `<div class="empty">Nothing paid in ${MONTHS[viewM]}. Earlier payments are in the full history.</div>`
+      : `<div class="empty">No payments recorded yet.</div>`;
     return;
   }
   list.innerHTML = "";
   for(const p of items){
-    const row = document.createElement("div");
-    row.className = "pay";
-    const when = parseYmd(p.on);
-    row.innerHTML = `<span class="who"><b>${fmtMoney(p.a, cur)}</b>`
-      + `<span>${when.getDate()} ${MONTHS[when.getMonth()].slice(0,3)} ${when.getFullYear()}`
-      + `${p.note ? " \u00b7 " + esc(p.note) : ""}</span></span>`
-      + `<button class="x" aria-label="Remove this payment">${ICON_X}</button>`;
-    row.querySelector(".x").addEventListener("click", () => removePayment(p.id));
-    list.appendChild(row);
+    list.appendChild(paymentRow(p, cur));
+  }
+}
+
+function paymentRow(p, cur){
+  const row = document.createElement("div");
+  row.className = "pay";
+  const when = parseYmd(p.on);
+  row.innerHTML = `<span class="who"><b>${fmtMoney(p.a, cur)}</b>`
+    + `<span>${when.getDate()} ${MONTHS[when.getMonth()].slice(0,3)} ${when.getFullYear()}`
+    + `${p.note ? " \u00b7 " + esc(p.note) : ""}</span></span>`
+    + `<button class="x" aria-label="Remove this payment">${ICON_X}</button>`;
+  row.querySelector(".x").addEventListener("click", () => removePayment(p.id));
+  return row;
+}
+
+/* Every payment ever, by year and then by month, because what people check at
+   the end of a year is what they handed over across it. */
+function renderHistory(){
+  const cur = store.settings.currency;
+  const items = livePayments(store).sort((a, b) => (b.on || "").localeCompare(a.on || ""));
+  $("hTotal").textContent = fmtMoney(items.reduce((sum, p) => sum + p.a, 0), cur);
+  const box = $("hList"); box.innerHTML = "";
+  if(!items.length){
+    box.innerHTML = `<div class="empty">No payments recorded yet.</div>`;
+    return;
+  }
+  const byYear = new Map();
+  for(const p of items){
+    const year = (p.on || "").slice(0, 4);
+    if(!byYear.has(year)) byYear.set(year, []);
+    byYear.get(year).push(p);
+  }
+  for(const [year, yearItems] of byYear){
+    const total = yearItems.reduce((sum, p) => sum + p.a, 0);
+    const head = document.createElement("div");
+    head.className = "billtotal";
+    head.style.cssText = "margin-top:14px; font-weight:650";
+    head.innerHTML = `<span>${esc(year)}</span><b class="num">${fmtMoney(total, cur)}</b>`;
+    box.appendChild(head);
+
+    const byMonth = new Map();
+    for(const p of yearItems){
+      const m = (p.on || "").slice(0, 7);
+      if(!byMonth.has(m)) byMonth.set(m, []);
+      byMonth.get(m).push(p);
+    }
+    for(const [monthKey, monthItems] of byMonth){
+      const monthTotal = monthItems.reduce((sum, p) => sum + p.a, 0);
+      const label = document.createElement("label");
+      label.style.cssText = "display:flex; justify-content:space-between; font-size:12px; "
+        + "font-weight:600; color:var(--text-2); margin:12px 0 4px";
+      const monthName = MONTHS[Number(monthKey.slice(5, 7)) - 1] || monthKey;
+      label.innerHTML = `<span>${esc(monthName)}</span><span>${fmtMoney(monthTotal, cur)}</span>`;
+      box.appendChild(label);
+      for(const p of monthItems) box.appendChild(paymentRow(p, cur));
+    }
   }
 }
 
@@ -1184,6 +1258,7 @@ function writePayment(id, entry){
   queueSync();
   render();
   renderPayments();
+  if(openSheet === "shHistory") renderHistory();
 }
 
 function addPayment(){
@@ -1873,6 +1948,7 @@ $("btnBalance").addEventListener("click", () => {
   sheet("shPay");
 });
 $("pAdd").addEventListener("click", addPayment);
+$("pAll").addEventListener("click", () => { renderHistory(); sheet("shHistory"); });
 $("pAmount").addEventListener("keydown", e => { if(e.key === "Enter") addPayment(); });
 $("pNote").addEventListener("keydown", e => { if(e.key === "Enter") addPayment(); });
 
@@ -2022,6 +2098,48 @@ renderInstallRow();
   else if(view === "bill") $("btnBill").click();
 }
 
+/* ---------------- this phone's identity ----------------
+
+   The sync code alone used to be the whole key: anyone it was forwarded to
+   could rewrite months of somebody's records. Each phone now carries its own
+   credential, and the mirror applies its changes only once a phone already on
+   the book has let it in. Kept outside the book on purpose — it is this
+   device's secret and must never travel to the other phones. */
+const DEVICE_KEY = "milkbook_device_v1";
+function thisDevice(){
+  try{
+    const saved = JSON.parse(localStorage.getItem(DEVICE_KEY) || "null");
+    if(saved && saved.id && saved.key) return saved;
+  }catch(e){}
+  const rand = n => {
+    const a = new Uint8Array(n); crypto.getRandomValues(a);
+    return [...a].map(x => "abcdefghijklmnopqrstuvwxyz0123456789"[x % 36]).join("");
+  };
+  const made = { id: rand(20), key: rand(48), name: deviceName() };
+  try{ localStorage.setItem(DEVICE_KEY, JSON.stringify(made)); }catch(e){}
+  return made;
+}
+function deviceName(){
+  const ua = navigator.userAgent;
+  if(/iPad/.test(ua)) return "iPad";
+  if(/iPhone/.test(ua)) return "iPhone";
+  if(/Android/.test(ua)) return "Android phone";
+  if(/Macintosh/.test(ua)) return "Mac";
+  if(/Windows/.test(ua)) return "Windows PC";
+  return "A phone";
+}
+const device = thisDevice();
+
+/* The same four characters the mirror shows the other phones, worked out here
+   so the joining phone can read them aloud and be checked rather than waved
+   through. Must match device_label in app.py. */
+async function deviceLabel(id){
+  const bytes = new TextEncoder().encode("milkbook-label:" + id);
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return [...hash.slice(0, 4)].map(b => alphabet[b % 32]).join("");
+}
+
 /* ---------------- sync ---------------- */
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function newCode(){
@@ -2042,6 +2160,8 @@ function parseCode(input){
 }
 
 let syncTimer = 0, syncing = false, syncPending = false;
+let syncStanding = null, syncRoster = null;
+let pendingApprovals = [], pendingRemovals = [];
 function queueSync(){
   if(!store.sync) return;
   // An edit made while a sync is already in flight used to be dropped: the
@@ -2073,11 +2193,15 @@ async function doSync(quiet){
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: store.settings, days: store.days,
                              locks: store.locks || {}, payments: store.payments || {},
-                             rates: store.rates || {} }),
+                             rates: store.rates || {},
+                             device, approve: pendingApprovals, revoke: pendingRemovals }),
       signal: ctl.signal,
     });
     if(!res.ok) throw new Error("http " + res.status);
     const remote = await res.json();
+    pendingApprovals = []; pendingRemovals = [];
+    syncStanding = remote.you || null;
+    syncRoster = remote.roster || null;
     const merged = mergeStores(store, remote);
     store.settings = merged.settings; store.days = merged.days;
     store.locks = merged.locks; store.payments = merged.payments;
@@ -2085,7 +2209,14 @@ async function doSync(quiet){
     saveStore(store); render();
     if(openSheet === "shPay") renderPayments();   // the sheet in front of you is not exempt
     if(openSheet === "shSync") renderSync();
-    if(!quiet) toast("Synced");
+    // Being turned away is not a failure to hide behind a tick. The phone is
+    // holding edits nobody will ever see until somebody lets it in.
+    if(syncStanding && syncStanding.ok === false){
+      if(!quiet) toast(syncStanding.why === "wrong-key"
+        ? "This phone is not recognised \u2014 ask the family to remove it and join again"
+        : "Waiting for someone on this book to let this phone in");
+    }
+    else if(!quiet) toast("Synced");
   }catch(e){
     if(!quiet) toast("Sync unavailable \u2014 your data is safe on this device");
   }finally{
@@ -2099,7 +2230,76 @@ function renderSync(){
   $("syncOff").style.display = on ? "none" : "";
   $("syncOn").style.display = on ? "" : "none";
   $("sCode").textContent = on ? store.sync : "\u2014";
-  $("syncSub").textContent = on ? "On \u2014 " + store.sync : "Share one code with your family";
+  const waiting = !!(syncStanding && syncStanding.ok === false
+                     && syncStanding.why !== "no-device");
+  $("syncSub").textContent = !on ? "Share one code with your family"
+    : waiting ? "Waiting to be let in" : "On \u2014 " + store.sync;
+  $("sWaiting").hidden = !waiting;
+  if(waiting) deviceLabel(device.id).then(l => { $("sMyLabel").textContent = l; });
+  renderPeople();
+}
+
+/* Who is on this book, and who is asking to be. */
+function renderPeople(){
+  const box = $("sPeople"); box.innerHTML = "";
+  const roster = syncRoster || {};
+  const ids = Object.keys(roster);
+  if(!ids.length) return;
+  const mine = !!(syncStanding && syncStanding.ok);
+  const waiting = ids.filter(id => !roster[id].ok);
+  const inside = ids.filter(id => roster[id].ok);
+
+  const section = (title, list, kind) => {
+    if(!list.length) return;
+    const h = document.createElement("label");
+    h.style.cssText = "display:block; font-size:12px; font-weight:600; color:var(--text-2); margin:10px 0 5px";
+    h.textContent = title;
+    box.appendChild(h);
+    for(const id of list){
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--line)";
+      const label = document.createElement("div");
+      label.style.cssText = "flex:1; min-width:0";
+      const isMe = id === device.id;
+      label.innerHTML = `<div style="font-size:14px; font-weight:550">${esc(roster[id].n)}`
+        + (isMe ? ' <span style="font-weight:400; color:var(--text-3)">\u00b7 this phone</span>' : "")
+        + `</div><div style="font-size:11.5px; color:var(--text-3); letter-spacing:.08em">${esc(roster[id].label || "")}</div>`;
+      row.appendChild(label);
+      // Only a phone that is itself on the book may let another in or put it
+      // out, so the buttons are not offered to one that is still waiting.
+      if(mine && kind === "waiting"){
+        const yes = document.createElement("button");
+        yes.className = "btn"; yes.style.cssText = "width:auto; padding:7px 12px; margin:0; font-size:13px";
+        yes.textContent = "Let in";
+        yes.addEventListener("click", () => { pendingApprovals.push(id); doSync(false); });
+        row.appendChild(yes);
+      }
+      if(mine && kind === "inside" && inside.length > 1){
+        const no = document.createElement("button");
+        no.className = "btn sec"; no.style.cssText = "width:auto; padding:7px 12px; margin:0; font-size:13px";
+        no.textContent = isMe ? "Leave" : "Remove";
+        no.addEventListener("click", () => confirmRemove(id, roster[id].n, isMe));
+        row.appendChild(no);
+      }
+      box.appendChild(row);
+    }
+  };
+  section("Waiting to be let in", waiting, "waiting");
+  section("On this book", inside, "inside");
+}
+
+function confirmRemove(id, name, isMe){
+  ask(isMe ? "Take this phone off the book?" : `Remove ${name}?`,
+    isMe
+      ? "This phone keeps everything it already has and carries on working on its own. "
+        + "It will not be able to change the shared book again until somebody lets it back in."
+      : `${name} keeps the copy it already has, but nothing it does from now on will reach `
+        + `this book. You can let it back in later.`,
+    isMe ? "Take it off" : "Remove",
+    // The confirmation replaced the sync sheet, so the list has to be redrawn
+    // and brought back, or the phone you just removed is still sitting there.
+    () => { pendingRemovals.push(id); doSync(false).then(() => { renderSync(); sheet("shSync"); }); },
+    true);
 }
 
 /* Joining a code is a pull.
@@ -2134,6 +2334,10 @@ function adoptBook(code, remote){
   store.rates = remote.rates || {};
   saveStore(store); renderSync(); render();
   toast("Joined \u2014 this phone now shows the family's book");
+  // Ask straight away whether this phone is allowed to write, so it says it is
+  // waiting from the moment it joins rather than looking fine until the first
+  // edit quietly fails to travel.
+  doSync(true);
 }
 
 /* Bringing your own records into somebody else's book.
