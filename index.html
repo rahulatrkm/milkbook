@@ -490,6 +490,16 @@
     <p class="hint">A closed month cannot be changed by a stray tap, on any phone sharing this book. You can always unlock one when you genuinely need to.</p>
   </div>
   <div class="field">
+    <label for="fGuard">This month's calendar</label>
+    <select id="fGuard">
+      <option value="1">Protected — tap the button below for today</option>
+      <option value="0">Open — any day this month can be tapped</option>
+    </select>
+    <p class="hint">Closing months protects the ones that have ended, but the month on screen is the one a
+      thumb actually brushes. While it is protected, tapping a day does nothing and today is marked with
+      the button at the bottom — a long press there sets a different quantity.</p>
+  </div>
+  <div class="field">
     <label for="fFull">Full control</label>
     <select id="fFull">
       <option value="0">Normal — closed months are protected</option>
@@ -508,6 +518,7 @@
     <p class="hint" id="localNote" hidden><b>You are using a saved copy.</b> It works entirely offline
       and keeps its own book, separate from the one in your browser.</p>
   </div>
+  <button class="btn sec" id="btnVersions" type="button" style="margin-bottom:8px">Earlier versions of this book</button>
   <button class="btn sec" id="btnRestore" type="button" hidden style="margin-bottom:8px"></button>
   <button class="btn" id="saveSettings">Save</button>
   <button class="btn danger" id="btnReset" style="margin-top:8px">Erase all data</button>
@@ -595,6 +606,30 @@
   <p class="lede">Every payment recorded in this book, newest first.</p>
   <div class="billtotal"><span>Paid in total</span><b class="num" id="hTotal">—</b></div>
   <div id="hList" style="margin-top:16px"></div>
+</div>
+
+<!-- earlier versions of the book -->
+<div class="sheet" id="shHistoryBook">
+  <div class="grab"></div>
+  <h2>Earlier versions</h2>
+  <p class="lede">The book as it stood at the start of each of these days, kept on this phone. If something
+    has been changed by mistake, you can put one of them back.</p>
+  <div id="vList"></div>
+</div>
+
+<!-- when a new price starts -->
+<div class="sheet" id="shRate">
+  <div class="grab"></div>
+  <h2>When does the new price start?</h2>
+  <p class="lede" id="rLede"></p>
+  <div class="field">
+    <label>From</label>
+    <div class="chips" id="rQuick"></div>
+    <input id="rFrom" type="date" style="margin-top:10px" />
+    <p class="hint" id="rEffect"></p>
+  </div>
+  <button class="btn" id="rSave">Use this date</button>
+  <button class="btn sec" id="rWhole" style="margin-top:8px">Apply to the whole book instead</button>
 </div>
 
 <!-- install -->
@@ -703,7 +738,8 @@ function freshStore(){
          price and start date with its own untouched defaults. */
       t: 0, vendor: "", qtyMl: 1000, rateMinor: 6000,
       currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
-      skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true, fullControl: false,
+      skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true,
+      fullControl: false, guardCurrent: true,
     },
     days: {},
     locks: {},
@@ -738,7 +774,65 @@ function loadStore(){
     return s;
   }catch(e){ return freshStore(); }
 }
-function saveStore(s){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(s)); }catch(e){} }
+/* ---------------- a way back ----------------
+
+   Locks and undo stop a stray tap, but neither helps once a book has quietly
+   drifted: a quantity changed weeks ago, a default flipped, a range set wrong
+   and only noticed when the bill looks off. So the book as it stood at the
+   start of each day is kept, and any of those days can be put back.
+
+   Taken from what is already in storage rather than from the object in memory,
+   because by the time anything calls saveStore the change has been made. */
+const SNAP_KEY = "milkbook_history_v1";
+// Which day was last kept, on its own. Every tap on the calendar saves the
+// book, and reading that far only to find today is already kept would mean
+// parsing every copy — nearly a megabyte of JSON — on each one.
+const SNAP_DAY_KEY = "milkbook_history_day_v1";
+const MAX_SNAPSHOTS = 14;
+const SNAPSHOT_BUDGET = 1500000;   // characters, well inside a browser's allowance
+
+function snapshots(){
+  try{
+    const list = JSON.parse(localStorage.getItem(SNAP_KEY) || "[]");
+    return Array.isArray(list) ? list : [];
+  }catch(e){ return []; }
+}
+
+function takeSnapshot(force){
+  const on = ymd(new Date());
+  let raw;
+  try{
+    if(!force && localStorage.getItem(SNAP_DAY_KEY) === on) return;
+    raw = localStorage.getItem(STORE_KEY);
+  }catch(e){ return; }
+  if(!raw) return;
+  const list = snapshots();
+  // One a day. The useful copy is the book as it was before today's changes,
+  // not after each of them. A restore asks for one outright.
+  if(!force && list.length && list[0].on === on){
+    try{ localStorage.setItem(SNAP_DAY_KEY, on); }catch(e){}
+    return;
+  }
+  list.unshift({ on, at: Date.now(), book: raw });
+  while(list.length > MAX_SNAPSHOTS) list.pop();
+  while(list.length > 2 && list.reduce((n, s) => n + s.book.length, 0) > SNAPSHOT_BUDGET) list.pop();
+  for(;;){
+    try{
+      localStorage.setItem(SNAP_KEY, JSON.stringify(list));
+      localStorage.setItem(SNAP_DAY_KEY, on);
+      return;
+    }catch(e){
+      // Out of room. Older copies go first, and the book itself always wins.
+      if(list.length <= 1){ try{ localStorage.removeItem(SNAP_KEY); }catch(e2){} return; }
+      list.pop();
+    }
+  }
+}
+
+function saveStore(s){
+  takeSnapshot();
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(s)); }catch(e){}
+}
 
 /* ---------------- keeping a copy on the device ----------------
 
@@ -926,6 +1020,12 @@ function lockInfo(store, y, m, todayKey){
     const lastDay = keyOf(y, m, daysInMonth(y, m));
     if(addDays(lastDay, after) <= todayKey) return { locked: true, reason: "auto" };
   }
+  /* The month you are in is guarded too. Closing months a week after they end
+     protects last month but leaves the one you are actually looking at wide
+     open, and that is the month a thumb brushes. Today stays one tap away on
+     the button at the bottom, which is the only day most people ever mean. */
+  if(store.settings.guardCurrent !== false && todayKey.startsWith(monthKeyOf(y, m)))
+    return { locked: true, reason: "guard" };
   return { locked: false, reason: "open" };
 }
 
@@ -1304,7 +1404,7 @@ function render(){  const tk = today();
   const lock = lockInfo(store, viewY, viewM, tk);
   const lockBtn = $("btnLock");
   const chipWord = lock.locked
-    ? (lock.reason === "auto" ? "Closed" : "Locked")
+    ? (lock.reason === "auto" ? "Closed" : lock.reason === "guard" ? "Protected" : "Locked")
     : lock.reason === "today" ? "Open today"
     : lock.reason === "full" ? "Full control"
     : "Lock month";
@@ -1312,7 +1412,8 @@ function render(){  const tk = today();
   lockBtn.innerHTML = (lock.locked ? ICON_LOCK : ICON_OPEN) + `<span>${chipWord}</span>`;
   lockBtn.disabled = lock.reason === "full";
   lockBtn.setAttribute("aria-label",
-    lock.locked ? `${MONTHS[viewM]} ${viewY} is locked. Tap to unlock.`
+    lock.reason === "guard" ? `${MONTHS[viewM]} is protected. Tap to open it for today.`
+      : lock.locked ? `${MONTHS[viewM]} ${viewY} is locked. Tap to unlock.`
       : lock.reason === "today" ? `${MONTHS[viewM]} ${viewY} is open for today only. Tap to close it now.`
       : lock.reason === "full" ? `Full control is on, so ${MONTHS[viewM]} ${viewY} is open`
       : `Lock ${MONTHS[viewM]} ${viewY}`);
@@ -1358,14 +1459,19 @@ function render(){  const tk = today();
     const info = dayInfo(store, key);
     const btn = document.createElement("button");
     const future = key > tk, pre = key < store.settings.startDate && !store.days[key];
+    // Today is still yours while the month is guarded, so it must not be drawn
+    // or announced as though it were shut. Saying a day is locked while it
+    // happily takes edits is worse than either answer on its own.
+    const shut = lock.locked && !(lock.reason === "guard" && key === tk);
     btn.className = "day " + info.state + (future ? " future" : "") + (pre ? " pre" : "")
-      + (lock.locked ? " locked" : "") + (key === tk ? " today" : "");
+      + (shut ? " locked" : "") + (key === tk ? " today" : "");
     const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS
       : info.state === "away" ? ICON_AWAY : info.state === "off" ? ICON_OFF : "";
     btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` +
       (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
     btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${STATE_WORDS[info.state] || info.state}`
-      + (future ? " (planned)" : "") + (lock.locked ? " (locked)" : "")
+      + (future ? " (planned)" : "")
+      + (shut ? (lock.reason === "guard" ? " (protected)" : " (locked)") : "")
       + (pre ? " (before this book starts)" : ""));
     {
       /* Marking a day runs on `click`, not on `pointerup`.
@@ -1429,8 +1535,16 @@ function editBlocked(key){
   // the ordinary case is a book you do not want a stray thumb rewriting.
   if(store.settings.fullControl) return null;
   const d = parseYmd(key);
-  if(lockInfo(store, d.getFullYear(), d.getMonth(), today()).locked)
-    return `${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed. Unlock it above to correct a day.`;
+  const info = lockInfo(store, d.getFullYear(), d.getMonth(), today());
+  if(info.locked){
+    // Today is never out of reach: guarding this month is about the days you
+    // already recorded, not the one you are recording now.
+    if(info.reason === "guard" && key === today()) return null;
+    return info.reason === "guard"
+      ? `${MONTHS[d.getMonth()]} is protected so a stray tap cannot change it. `
+        + `Use the button at the bottom for today, or tap Protected above to open the month.`
+      : `${MONTHS[d.getMonth()]} ${d.getFullYear()} is closed. Unlock it above to correct a day.`;
+  }
   // Only a day with nothing on it is out of the book's reach. One that already
   // carries a record is part of the book wherever the start date sits.
   if(key < store.settings.startDate && !store.days[key]) return BEFORE_START;
@@ -1572,6 +1686,7 @@ function settingsFormRaw(){
   return JSON.stringify([
     $("fVendor").value, $("fQty").value, $("fRate").value, $("fCur").value,
     $("fStart").value, $("fLock").value, $("fDefault").value, $("fFull").value,
+    $("fGuard").value,
     [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => c.dataset.d).join(","),
   ]);
 }
@@ -1671,6 +1786,7 @@ function openSettings(){
   $("fStart").value = st.startDate;
   $("fLock").value = String(Number(st.lockAfterDays) || 0);
   $("fFull").value = st.fullControl ? "1" : "0";
+  $("fGuard").value = st.guardCurrent === false ? "0" : "1";
   const def = $("fDefault"); def.innerHTML = "";
   for(const [val, label] of DEFAULT_STATES){
     const o = document.createElement("option");
@@ -1777,6 +1893,7 @@ $("saveSettings").addEventListener("click", () => {
     lockAfterDays: Math.max(0, parseInt($("fLock").value, 10) || 0),
     lockChoice: true,
     fullControl: $("fFull").value === "1",
+    guardCurrent: $("fGuard").value === "1",
     defaultState: DEFAULT_STATES.some(d => d[0] === $("fDefault").value) ? $("fDefault").value : "yes",
     skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
   };
@@ -1789,28 +1906,11 @@ $("saveSettings").addEventListener("click", () => {
   const startMovedBack = next.startDate < (was.startDate || next.startDate);
 
   // A price change is its own question, because the honest answer is usually
-  // "from now on" rather than "and also every bill I have already sent".
+  // "from now on" rather than "and also every bill I have already sent" — and
+  // often neither, because the vendor put it up on the first and told you on
+  // the twelfth.
   if(rateChanged && Object.keys(store.days).length){
-    return ask("When does the new price start?",
-      `Bills already sent were worked out at ${fmtMoney(was.rateMinor || 0, was.currency)} a litre. `
-      + `Starting the new price from today leaves those exactly as they were; applying it to the `
-      + `whole book restates every month you have ever billed.`,
-      "From today onwards",
-      () => {
-        const from = today();
-        store.rates = store.rates || {};
-        // The old price has to be written down as well as the new one. Without a
-        // baseline, every day before this change falls through to the current
-        // rate in settings -- which is the new one -- and the whole history is
-        // restated anyway, which is precisely what this choice is refusing.
-        const base = store.settings.startDate;
-        if(DAY_RE.test(base || "") && !store.rates[base] && base < from)
-          store.rates[base] = { r: Number(was.rateMinor) || 0, t: Date.now() };
-        store.rates[from] = { r: next.rateMinor, t: Date.now() };
-        applySettings(next, readingChanged);
-      },
-      false,
-      { label: "Apply to the whole book", run: () => { store.rates = {}; applySettings(next, readingChanged); } });
+    return askRateStart(was, next, readingChanged);
   }
 
   if(startMovedBack) return applySettings(next, true, () => fillBackTo(next.startDate));
@@ -1825,6 +1925,164 @@ $("saveSettings").addEventListener("click", () => {
     false,
     { label: "Apply to past months too", run: () => applySettings(next, false) });
 });
+/* Which day a new price starts on.
+
+   Two buttons could only offer "today" or "always", and neither is what usually
+   happened: the vendor put the price up on the first and mentioned it on the
+   twelfth. Picking the day means the bills either side of it are both right. */
+let ratePending = null;
+function askRateStart(was, next, readingChanged){
+  ratePending = { was, next, readingChanged };
+  const cur = was.currency;
+  $("rLede").textContent =
+    `From ${fmtMoney(was.rateMinor || 0, cur)} to ${fmtMoney(next.rateMinor, cur)} a litre. `
+    + `Days before the date you choose stay at the old price, so bills you have already sent do not move.`;
+  const tk = today();
+  const firstOfMonth = tk.slice(0, 8) + "01";
+  const w = $("rQuick"); w.innerHTML = "";
+  const options = [["Today", tk], [`1 ${MONTHS[parseYmd(tk).getMonth()]}`, firstOfMonth]];
+  const start = store.settings.startDate;
+  if(DAY_RE.test(start || "") && start < firstOfMonth) options.push(["When the book began", start]);
+  for(const [label, value] of options){
+    const chip = document.createElement("button");
+    chip.className = "chip";
+    chip.textContent = label;
+    chip.addEventListener("click", () => { $("rFrom").value = value; renderRateEffect(); });
+    w.appendChild(chip);
+  }
+  $("rFrom").value = tk;
+  $("rFrom").max = tk;
+  renderRateEffect();
+  sheet("shRate");
+}
+
+function renderRateEffect(){
+  if(!ratePending) return;
+  const from = $("rFrom").value;
+  const cur = ratePending.was.currency;
+  const chips = [...$("rQuick").children];
+  chips.forEach(c => c.classList.toggle("on", false));
+  if(!DAY_RE.test(from || "")){
+    $("rEffect").textContent = "Pick the day the new price starts.";
+    $("rSave").disabled = true;
+    return;
+  }
+  $("rSave").disabled = false;
+  const d = parseYmd(from);
+  $("rEffect").textContent =
+    `Milk delivered up to ${addDays(from, -1).split("-").reverse().slice(0, 2).join("/")} stays at `
+    + `${fmtMoney(ratePending.was.rateMinor || 0, cur)}. From ${d.getDate()} ${MONTHS[d.getMonth()]} `
+    + `it is ${fmtMoney(ratePending.next.rateMinor, cur)}.`;
+}
+$("rFrom").addEventListener("input", renderRateEffect);
+$("rSave").addEventListener("click", () => {
+  if(!ratePending) return;
+  const from = $("rFrom").value;
+  if(!DAY_RE.test(from || "")) return toast("Pick the day the new price starts");
+  const { was, next, readingChanged } = ratePending;
+  ratePending = null;
+  store.rates = store.rates || {};
+  /* The old price has to be written down as well as the new one. Without a
+     baseline, every day before this change falls through to the current rate in
+     settings — which is the new one — and the whole history is restated anyway,
+     which is precisely what this choice is refusing. */
+  const base = store.settings.startDate;
+  if(DAY_RE.test(base || "") && !store.rates[base] && base < from)
+    store.rates[base] = { r: Number(was.rateMinor) || 0, t: Date.now() };
+  store.rates[from] = { r: next.rateMinor, t: Date.now() };
+  applySettings(next, readingChanged);
+});
+$("rWhole").addEventListener("click", () => {
+  if(!ratePending) return;
+  const { next, readingChanged } = ratePending;
+  ratePending = null;
+  ask("Restate every bill you have sent?",
+    "Applying the new price to the whole book changes what every month you have already billed comes "
+    + "to, including ones you have been paid for. Most price rises start from a date instead.",
+    "Restate the whole book",
+    () => { store.rates = {}; applySettings(next, readingChanged); },
+    true);
+});
+
+/* Putting an earlier version back.
+
+   Every record gets a fresh timestamp on the way in. Without that the restored
+   days carry their original, older stamps, the next merge decides the copy on
+   the other phones is newer, and the mistake you just undid comes straight back
+   — a restore that quietly reverses itself is worse than none. */
+function renderVersions(){
+  const box = $("vList"); box.innerHTML = "";
+  const list = snapshots();
+  if(!list.length){
+    box.innerHTML = `<div class="empty">Nothing kept yet. A copy is put aside the first time you `
+      + `change the book on any new day.</div>`;
+    return;
+  }
+  const cur = store.settings.currency;
+  for(const snap of list){
+    let book = null;
+    try{ book = JSON.parse(snap.book); }catch(e){ continue; }
+    if(!DAY_RE.test(snap.on || "")) continue;
+    const days = Object.keys(book.days || {}).length;
+    const paid = Object.values(book.payments || {})
+      .filter(p => p && !p.del).reduce((n, p) => n + (p.a || 0), 0);
+    const when = parseYmd(snap.on);
+    const clock = new Date(Number(snap.at) || 0);
+    const time = Number(snap.at) ? `, ${pad2(clock.getHours())}:${pad2(clock.getMinutes())}` : "";
+    const row = document.createElement("div");
+    row.className = "pay";
+    row.innerHTML = `<span class="who"><b>${when.getDate()} ${MONTHS[when.getMonth()].slice(0,3)} `
+      + `${when.getFullYear()}${time}</b><span>${days} day${days === 1 ? "" : "s"} recorded`
+      + `${paid ? " \u00b7 " + fmtMoney(paid, cur) + " paid" : ""}</span></span>`;
+    const go = document.createElement("button");
+    go.className = "btn sec";
+    go.style.cssText = "width:auto; padding:7px 12px; margin:0; font-size:13px";
+    go.textContent = "Put back";
+    go.addEventListener("click", () => confirmRestoreVersion(snap, days));
+    row.appendChild(go);
+    box.appendChild(row);
+  }
+}
+
+function confirmRestoreVersion(snap, days){
+  const when = parseYmd(snap.on);
+  const label = `${when.getDate()} ${MONTHS[when.getMonth()]} ${when.getFullYear()}`;
+  ask(`Put the book back to ${label}?`,
+    `It had ${days} day${days === 1 ? "" : "s"} recorded. Anything changed since will be replaced by `
+    + `what this copy holds`
+    + (store.sync ? ", on every phone sharing this book" : "")
+    + `. Today's book is kept as another version first, so this can be undone.`,
+    "Put it back",
+    () => restoreVersion(snap),
+    true);
+}
+
+function restoreVersion(snap){
+  let book;
+  try{ book = JSON.parse(snap.book); }catch(e){ return toast("That copy could not be read"); }
+  takeSnapshot(true);                      // so the restore itself can be undone
+  const now = Date.now();
+  const restamp = map => {
+    const out = {};
+    for(const [k, v] of Object.entries(map || {})) out[k] = Object.assign({}, v, { t: now });
+    return out;
+  };
+  const keepSync = store.sync;
+  store.settings = Object.assign(freshStore().settings, book.settings || {},
+    { t: now, at: Object.fromEntries(Object.keys(book.settings || {})
+        .filter(k => k !== "at" && k !== "t").map(k => [k, now])) });
+  store.days = restamp(book.days);
+  store.locks = restamp(book.locks);
+  store.payments = restamp(book.payments);
+  store.rates = restamp(book.rates);
+  store.sync = keepSync;                   // the code belongs to this phone, not to the copy
+  saveStore(store); queueSync(); render(); renderVersions();
+  sheet(null);
+  toast("Put back");
+}
+
+$("btnVersions").addEventListener("click", () => { renderVersions(); sheet("shHistoryBook"); });
+
 $("btnLocal").addEventListener("click", downloadLocalCopy);
 $("btnRestore").addEventListener("click", () => {
   const stash = readStash();
@@ -1841,10 +2099,18 @@ $("fullOff").addEventListener("click", () => {
   saveStore(store); queueSync(); render(); toast("Full control off");
 });
 $("btnReset").addEventListener("click", () => {  ask("Erase everything?",
-    "Every day you have recorded on this device will be deleted. This cannot be undone, "
-    + "and if you are syncing, the other phones still hold their copy.",
+    "Every day you have recorded on this device will be deleted, along with the earlier versions "
+    + "kept here. This cannot be undone, and if you are syncing, the other phones still hold their copy.",
     "Erase all data",
-    () => { store = freshStore(); saveStore(store); render(); renderSync(); toast("Erased"); },
+    () => {
+      // Erase has to mean erase. Leaving the kept copies behind would hand the
+      // whole book to whoever picks the phone up next.
+      for(const key of [SNAP_KEY, SNAP_DAY_KEY, STASH_KEY]){
+        try{ localStorage.removeItem(key); }catch(e){}
+      }
+      store = freshStore(); saveStore(store);
+      render(); renderSync(); renderRestore(); toast("Erased");
+    },
     true);
 });
 
@@ -2498,11 +2764,39 @@ $("nextM").addEventListener("click", () => {
   if($("nextM").disabled) return;
   viewM++; if(viewM > 11){ viewM = 0; viewY++; } render();
 });
-$("fabToday").addEventListener("click", () => {
-  const n = new Date();
-  if(viewY !== n.getFullYear() || viewM !== n.getMonth()){ viewY = n.getFullYear(); viewM = n.getMonth(); render(); return; }
-  cycle(today());
-});
+/* The button at the bottom is the one deliberate way in: a tap marks today, a
+   long press opens it to set a different quantity. Everything else on the
+   calendar is guarded, so the gesture people use every day is also the only one
+   that needs no thought. */
+{
+  const fab = $("fabToday");
+  let held = false, timer = 0;
+  const cancel = () => clearTimeout(timer);
+  const onToday = () => {
+    const n = new Date();
+    return viewY === n.getFullYear() && viewM === n.getMonth();
+  };
+  fab.addEventListener("pointerdown", () => {
+    held = false;
+    timer = setTimeout(() => { held = true; openDay(today()); }, 450);
+  });
+  fab.addEventListener("pointerup", cancel);
+  fab.addEventListener("pointerleave", cancel);
+  fab.addEventListener("pointercancel", cancel);
+  fab.addEventListener("click", () => {
+    cancel();
+    if(held){ held = false; return; }
+    // Away from this month the button brings you back rather than recording
+    // against a day you cannot see.
+    if(!onToday()){
+      const n = new Date();
+      viewY = n.getFullYear(); viewM = n.getMonth(); render();
+      return;
+    }
+    cycle(today());
+  });
+  fab.addEventListener("contextmenu", e => { e.preventDefault(); cancel(); held = true; openDay(today()); });
+}
 
 $("btnLock").addEventListener("click", () => {
   const info = lockInfo(store, viewY, viewM, today());
@@ -2511,11 +2805,15 @@ $("btnLock").addEventListener("click", () => {
     setMonthLock(viewY, viewM, true);
     return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
   }
-  ask(`Unlock ${label} for today?`,
-    "Its records can be changed again, on every phone sharing this book. The month closes itself "
-    + "again tomorrow, so opening it to fix one day does not leave it open for good. If you need "
-    + "longer, turn on full control in settings.",
-    "Unlock for today",
+  ask(info.reason === "guard" ? `Open ${label} for today?` : `Unlock ${label} for today?`,
+    info.reason === "guard"
+      ? "This month is protected so a stray tap cannot change a day you already recorded. "
+        + "Opening it lets you correct any day in it, until the end of today. Today itself is "
+        + "always available from the button at the bottom."
+      : "Its records can be changed again, on every phone sharing this book. The month closes itself "
+        + "again tomorrow, so opening it to fix one day does not leave it open for good. If you need "
+        + "longer, turn on full control in settings.",
+    info.reason === "guard" ? "Open for today" : "Unlock for today",
     () => { setMonthLock(viewY, viewM, false); toast(`${label} open for today`); });
 });
 
