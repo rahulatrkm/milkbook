@@ -240,7 +240,12 @@ def sanitise(book: dict) -> dict:
         for key, entry in raw_locks.items():
             if not MONTH_RE.match(key) or not isinstance(entry, dict):
                 continue
-            locks[key] = {"on": bool(entry.get("on")), "t": int(entry.get("t") or 0)}
+            # null is a third state, not a falsy one: it means "no decision
+            # here, use the automatic rule". Coercing it with bool() turned
+            # handing protection back into an unlock on the next merge.
+            on = entry.get("on")
+            locks[key] = {"on": None if on is None else bool(on),
+                          "t": int(entry.get("t") or 0)}
 
     # Money handed over, kept as its own ledger rather than folded into a day.
     # A payment is not a delivery: it has its own date, and two of them on the

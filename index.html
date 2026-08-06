@@ -500,6 +500,18 @@
       the button at the bottom — a long press there sets a different quantity.</p>
   </div>
   <div class="field">
+    <label for="fOpenFor">When I open a closed month, keep it open for</label>
+    <select id="fOpenFor">
+      <option value="15">15 minutes</option>
+      <option value="60">An hour</option>
+      <option value="240">4 hours</option>
+      <option value="0">The rest of today</option>
+    </select>
+    <p class="hint">Opening a month is for making a correction, not for leaving it open. When the time is
+      up it protects or closes itself again, and the chip above the calendar hands it back the moment
+      you are done.</p>
+  </div>
+  <div class="field">
     <label for="fFull">Full control</label>
     <select id="fFull">
       <option value="0">Normal — closed months are protected</option>
@@ -786,7 +798,7 @@ function freshStore(){
       t: 0, vendor: "", qtyMl: 1000, rateMinor: 6000,
       currency: "INR", startDate: ymd(new Date(now.getFullYear(), now.getMonth(), 1)),
       skipWeekly: [], lockAfterDays: 7, defaultState: "yes", lockChoice: true,
-      fullControl: false, guardCurrent: true,
+      fullControl: false, guardCurrent: true, openMinutes: 60,
     },
     days: {},
     locks: {},
@@ -1051,7 +1063,7 @@ const monthKeyOf = (y, m) => `${y}-${pad2(m + 1)}`;
    month of records is a thumb brushing the calendar, not because anyone is
    attacking a milk book. An explicit unlock always beats the automatic rule, so
    closing the books can never trap you. */
-function lockInfo(store, y, m, todayKey){
+function lockInfo(store, y, m, todayKey, now){
   // Full control is the deliberate, banner-announced version of this. While it
   // is on nothing is closed, and the calendar has to say so — showing a month
   // as closed while edits go through is worse than either answer on its own.
@@ -1059,11 +1071,11 @@ function lockInfo(store, y, m, todayKey){
 
   const rec = (store.locks || {})[monthKeyOf(y, m)];
   if(rec && rec.on === true) return { locked: true, reason: "manual" };
-  // An unlock is for the day you did it. Opening a month to fix one day used to
-  // leave it open for good: the record beat the automatic rule for ever, so the
-  // protection quietly never came back. Now it lapses and the month closes
-  // itself again, which is what somebody unlocking to make a correction meant.
-  if(rec && rec.on === false && dayKeyOfTime(rec.t) === todayKey)
+  // An unlock is temporary. Opening a month to fix one day used to leave it open
+  // for good: the record beat the automatic rule for ever, so the protection
+  // quietly never came back. It now lapses after however long you asked for,
+  // which is what somebody unlocking to make a correction meant.
+  if(rec && rec.on === false && openStillGood(store, rec, todayKey, now))
     return { locked: false, reason: "today" };
 
   const after = Number(store.settings.lockAfterDays) || 0;
@@ -1084,6 +1096,62 @@ function lockInfo(store, y, m, todayKey){
 function dayKeyOfTime(t){
   const d = new Date(Number(t) || 0);
   return ymd(d);
+}
+
+const OPEN_CHOICES = [["15", "15 minutes"], ["60", "an hour"], ["240", "4 hours"],
+                      ["0", "the rest of today"]];
+const openMinutes = store =>
+  OPEN_CHOICES.some(c => +c[0] === Number(store.settings.openMinutes))
+    ? Number(store.settings.openMinutes) : 60;
+const openWord = store =>
+  (OPEN_CHOICES.find(c => +c[0] === openMinutes(store)) || OPEN_CHOICES[1])[1];
+
+/** Whether an unlock is still within the window it was granted for. */
+function openStillGood(store, rec, todayKey, now){
+  // The day is a backstop as well as a rule: without it a clock wound backwards
+  // would hold a month open indefinitely.
+  if(dayKeyOfTime(rec.t) !== todayKey) return false;
+  const mins = openMinutes(store);
+  if(mins === 0) return true;
+  return (now === undefined ? Date.now() : now) - (Number(rec.t) || 0) < mins * 60000;
+}
+
+/** How long an open month has left, in ms, or null when it runs to the day's end. */
+function openLeft(store, y, m, now){
+  const rec = (store.locks || {})[monthKeyOf(y, m)];
+  const mins = openMinutes(store);
+  if(!rec || rec.on !== false || mins === 0) return null;
+  return Math.max(0, (Number(rec.t) || 0) + mins * 60000 - (now === undefined ? Date.now() : now));
+}
+
+/** What a month would be if its unlock were handed back. */
+function lockIfHandedBack(store, y, m, todayKey, now){
+  const locks = Object.assign({}, store.locks);
+  delete locks[monthKeyOf(y, m)];
+  return lockInfo(Object.assign({}, store, { locks }), y, m, todayKey, now);
+}
+
+/** "for another 43 minutes" / "until the end of today", for a month standing open. */
+function openLabel(store, y, m, now){
+  const left = openLeft(store, y, m, now);
+  if(left === null) return "until the end of today";
+  const mins = Math.ceil(left / 60000);
+  if(mins <= 1) return "for another minute";
+  if(mins < 60) return `for another ${mins} minutes`;
+  const hrs = Math.round(mins / 60);
+  return hrs === 1 ? "for about another hour" : `for about another ${hrs} hours`;
+}
+
+/* An unlock that lapses while you are looking at the calendar has to show it.
+   Without this the month stayed open on screen, and only a reload told the
+   truth — the worst version, because the page said edits were allowed. */
+let lapseTimer = null;
+function scheduleLockLapse(lock, todayKey){
+  clearTimeout(lapseTimer);
+  if(lock.reason !== "today") return;
+  const left = openLeft(store, viewY, viewM);
+  if(left === null) return;
+  lapseTimer = setTimeout(() => { render(); }, Math.min(left + 250, 2147483647));
 }
 
 function dayLocked(store, key, todayKey){
@@ -1465,20 +1533,27 @@ function render(){  const tk = today();
 
   const lock = lockInfo(store, viewY, viewM, tk);
   const lockBtn = $("btnLock");
+  // While a month is open on borrowed time the chip is the way back, so it says
+  // what tapping does rather than what the month currently is.
+  const back = lock.reason === "today" ? lockIfHandedBack(store, viewY, viewM, tk) : null;
+  const backWord = !back ? "" : back.reason === "guard" ? "Protect now"
+    : back.locked ? "Close now" : "Lock month";
   const chipWord = lock.locked
     ? (lock.reason === "auto" ? "Closed" : lock.reason === "guard" ? "Protected" : "Locked")
-    : lock.reason === "today" ? "Open today"
+    : lock.reason === "today" ? backWord
     : lock.reason === "full" ? "Full control"
     : "Lock month";
   lockBtn.className = "lockchip" + (lock.locked ? " on" : "") + (lock.reason === "today" ? " temp" : "");
   lockBtn.innerHTML = (lock.locked ? ICON_LOCK : ICON_OPEN) + `<span>${chipWord}</span>`;
   lockBtn.disabled = lock.reason === "full";
   lockBtn.setAttribute("aria-label",
-    lock.reason === "guard" ? `${MONTHS[viewM]} is protected. Tap to open it for today.`
+    lock.reason === "guard" ? `${MONTHS[viewM]} is protected. Tap to open it for ${openWord(store)}.`
       : lock.locked ? `${MONTHS[viewM]} ${viewY} is locked. Tap to unlock.`
-      : lock.reason === "today" ? `${MONTHS[viewM]} ${viewY} is open for today only. Tap to close it now.`
+      : lock.reason === "today" ? `${MONTHS[viewM]} ${viewY} is open ${openLabel(store, viewY, viewM)}. `
+          + `Tap to ${backWord === "Protect now" ? "protect" : "close"} it again now.`
       : lock.reason === "full" ? `Full control is on, so ${MONTHS[viewM]} ${viewY} is open`
       : `Lock ${MONTHS[viewM]} ${viewY}`);
+  scheduleLockLapse(lock, tk);
 
   const s = monthSummary(store, viewY, viewM, tk);
   const plan = monthPlan(store, viewY, viewM, tk);
@@ -1771,6 +1846,15 @@ function setMonthLock(y, m, on){
   saveStore(store); queueSync(); render();
 }
 
+/* Dropping the record rather than writing one, so the automatic rule decides
+   again. The tombstone carries a time so another phone's older record cannot
+   quietly reinstate the unlock on the next merge. */
+function clearMonthLock(y, m){
+  store.locks = store.locks || {};
+  store.locks[monthKeyOf(y, m)] = { on: null, t: Date.now() };
+  saveStore(store); queueSync(); render();
+}
+
 /* ---------------- sheets ---------------- */
 /* Sheets behave like dialogs, not like divs that happen to slide up.
 
@@ -1810,7 +1894,7 @@ function settingsFormRaw(){
   return JSON.stringify([
     $("fVendor").value, $("fQty").value, $("fRate").value, $("fCur").value,
     $("fStart").value, $("fLock").value, $("fDefault").value, $("fFull").value,
-    $("fGuard").value,
+    $("fGuard").value, $("fOpenFor").value,
     [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => c.dataset.d).join(","),
   ]);
 }
@@ -1911,6 +1995,7 @@ function openSettings(){
   $("fLock").value = String(Number(st.lockAfterDays) || 0);
   $("fFull").value = st.fullControl ? "1" : "0";
   $("fGuard").value = st.guardCurrent === false ? "0" : "1";
+  $("fOpenFor").value = String(openMinutes(store));
   const def = $("fDefault"); def.innerHTML = "";
   for(const [val, label] of DEFAULT_STATES){
     const o = document.createElement("option");
@@ -2037,6 +2122,7 @@ $("saveSettings").addEventListener("click", () => {
     lockChoice: true,
     fullControl: $("fFull").value === "1",
     guardCurrent: $("fGuard").value === "1",
+    openMinutes: OPEN_CHOICES.some(c => c[0] === $("fOpenFor").value) ? +$("fOpenFor").value : 60,
     defaultState: DEFAULT_STATES.some(d => d[0] === $("fDefault").value) ? $("fDefault").value : "yes",
     skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
   };
@@ -3394,22 +3480,37 @@ $("nextM").addEventListener("click", () => {
 }
 
 $("btnLock").addEventListener("click", () => {
-  const info = lockInfo(store, viewY, viewM, today());
+  const tk = today();
+  const info = lockInfo(store, viewY, viewM, tk);
   const label = `${MONTHS[viewM]} ${viewY}`;
+  // Handing back a temporary unlock is not the same as locking the month: it
+  // drops the record so the automatic rule applies again. Locking instead left
+  // the month manually shut for ever, with no way back to protected.
+  if(info.reason === "today"){
+    const back = lockIfHandedBack(store, viewY, viewM, tk);
+    if(back.locked){
+      clearMonthLock(viewY, viewM);
+      return toast(back.reason === "guard" ? `${MONTHS[viewM]} protected again` : `${label} closed again`);
+    }
+    setMonthLock(viewY, viewM, true);
+    return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
+  }
   if(!info.locked){
     setMonthLock(viewY, viewM, true);
     return toast(`${label} locked`, () => { setMonthLock(viewY, viewM, false); toast(`${label} unlocked`); });
   }
-  ask(info.reason === "guard" ? `Open ${label} for today?` : `Unlock ${label} for today?`,
+  const forHow = openWord(store);
+  ask(info.reason === "guard" ? `Open ${label} for ${forHow}?` : `Unlock ${label} for ${forHow}?`,
     info.reason === "guard"
       ? "This month is protected so a stray tap cannot change a day you already recorded. "
-        + "Opening it lets you correct any day in it, until the end of today. Today itself is "
-        + "always available from the button at the bottom."
+        + `Opening it lets you correct any day in it for ${forHow}, then it protects itself again. `
+        + "Today itself is always available from the button at the bottom, and the chip up here "
+        + "hands it back sooner."
       : "Its records can be changed again, on every phone sharing this book. The month closes itself "
-        + "again tomorrow, so opening it to fix one day does not leave it open for good. If you need "
-        + "longer, turn on full control in settings.",
-    info.reason === "guard" ? "Open for today" : "Unlock for today",
-    () => { setMonthLock(viewY, viewM, false); toast(`${label} open for today`); });
+        + `again after ${forHow}, so opening it to fix one day does not leave it open for good. The `
+        + "chip up here closes it again sooner, and full control in settings keeps it open longer.",
+    info.reason === "guard" ? `Open for ${forHow}` : `Unlock for ${forHow}`,
+    () => { setMonthLock(viewY, viewM, false); toast(`${label} open ${openLabel(store, viewY, viewM)}`); });
 });
 
 /* ---------------- init ---------------- */

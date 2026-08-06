@@ -188,6 +188,19 @@ ok("a peer with no locks does not clear ours",
    M.merge(locked, {"settings": {}, "days": {}})["locks"]["2026-06"]["on"] is True)
 ok("merging locks is idempotent",
    M.merge(M.merge(locked, opened), opened) == M.merge(locked, opened))
+
+# Handing protection back drops the decision rather than making one, so the
+# automatic rule applies again. bool(None) is False, so coercing the tombstone
+# turned "protect this again" into "leave it unlocked" on the next merge.
+handed_back = {"settings": {}, "days": {}, "locks": {"2026-06": {"on": None, "t": 300}}}
+ok("handing protection back is kept as its own state, not squashed to unlocked",
+   M.sanitise({"locks": {"2026-06": {"on": None, "t": 5}}})["locks"]["2026-06"]["on"] is None)
+ok("and it reaches the other phones",
+   M.merge(opened, handed_back)["locks"]["2026-06"]["on"] is None)
+ok("an older unlock cannot bring itself back afterwards",
+   M.merge(handed_back, opened)["locks"]["2026-06"]["on"] is None)
+ok("a missing key is still a lock, not a hand-back",
+   M.sanitise({"locks": {"2026-06": {"t": 5}}})["locks"]["2026-06"]["on"] is None)
 try:
     M.sanitise({"locks": {f"20{i:02d}-01": {"on": True, "t": 1} for i in range(M.MAX_MONTHS + 10)}})
     ok("an absurd number of months is refused", False)
