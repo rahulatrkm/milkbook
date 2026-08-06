@@ -37,6 +37,8 @@ MAX_BODY = 512 * 1024
 MAX_DAYS = 20_000
 MAX_MONTHS = 1_200
 MAX_PAYMENTS = 20_000
+MAX_LOG = 300
+LOG_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 PAYMENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 RATE_LIMIT = 90          # requests per caller
 RATE_WINDOW = 60         # seconds
@@ -160,7 +162,7 @@ KNOWN_SETTINGS = {"t", "at", "vendor", "qtyMl", "rateMinor", "currency", "startD
 # The roster is the server's, not the client's: it is never read out of an
 # incoming body, only changed through approve/revoke by a device already in it.
 # That way a phone that has not been let in cannot write itself an invitation.
-KNOWN_TOP = {"settings", "days", "locks", "payments", "rates", "roster"}
+KNOWN_TOP = {"settings", "days", "locks", "payments", "rates", "roster", "log"}
 # Envelope, not book. These carry the caller's own credential, so letting the
 # unknown-field rule sweep them up would store a device secret in the book and
 # hand it back to anyone holding the code — which is everything this guards.
@@ -279,8 +281,24 @@ def sanitise(book: dict) -> dict:
                 "t": int(entry.get("t") or 0),
             }
 
+    raw_log = book.get("log")
+    log: list = []
+    if isinstance(raw_log, list):
+        for item in raw_log[:MAX_LOG]:
+            if not isinstance(item, dict):
+                continue
+            entry_id = str(item.get("i") or "")
+            if not LOG_ID_RE.match(entry_id):
+                continue
+            log.append({
+                "i": entry_id,
+                "t": int(item.get("t") or 0),
+                "d": str(item.get("d") or "")[:64],
+                "m": str(item.get("m") or "")[:120],
+            })
+
     return {"settings": settings, "days": days, "locks": locks, "payments": payments,
-            "rates": rates, **_carry_unknown(book, NEVER_STORE)}
+            "rates": rates, "log": log, **_carry_unknown(book, NEVER_STORE)}
 
 
 # ------------------------------------------------------------------- devices
@@ -434,6 +452,14 @@ def merge(a: dict, b: dict) -> dict:
         **_carry_unknown(a, NEVER_STORE),
         **_carry_unknown(b, NEVER_STORE),
     }
+    # The log only gains entries, so the union of both is the whole story. It is
+    # trimmed to the same ceiling here as on the phones, or two of them would
+    # keep handing each other back what the other had dropped.
+    seen: dict = {}
+    for item in list(a.get("log") or []) + list(b.get("log") or []):
+        if isinstance(item, dict) and item.get("i") and item["i"] not in seen:
+            seen[item["i"]] = item
+    merged["log"] = sorted(seen.values(), key=lambda e: e.get("t") or 0, reverse=True)[:MAX_LOG]
     # The roster is only ever the stored one. It is not merged from the body,
     # because the body is the one thing an unapproved phone controls.
     if isinstance(a.get("roster"), dict):

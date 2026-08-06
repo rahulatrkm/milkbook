@@ -699,5 +699,23 @@ ok("the write holds the book still while it changes it",
    "BEGIN IMMEDIATE" in Path(__file__).with_name("app.py").read_text(encoding="utf-8"))
 M._hits.clear()
 
+print("\nTHE CHANGE LOG TRAVELS BETWEEN PHONES")
+_a = M.sanitise({"settings": {"t": 1}, "days": {},
+                 "log": [{"i": "one", "t": 3, "d": "dev-a", "m": "12 Aug marked away"}]})
+_b = M.sanitise({"settings": {"t": 1}, "days": {},
+                 "log": [{"i": "two", "t": 5, "d": "dev-b", "m": "Payment recorded"}]})
+_both = M.merge(_a, _b)["log"]
+ok("both phones' lines survive a merge", len(_both) == 2, str(len(_both)))
+ok("newest first", _both[0]["i"] == "two")
+ok("merging twice does not double them", len(M.merge(M.merge(_a, _b), _b)["log"]) == 2)
+ok("a line with no id is dropped rather than stored",
+   M.sanitise({"settings": {}, "days": {}, "log": [{"m": "no id"}]})["log"] == [])
+ok("the message is capped so the log cannot become storage",
+   len(M.sanitise({"settings": {}, "days": {},
+                   "log": [{"i": "x", "m": "y" * 500}]})["log"][0]["m"]) == 120)
+_flood = M.sanitise({"settings": {}, "days": {},
+                     "log": [{"i": f"n{i}", "t": i, "m": "x"} for i in range(M.MAX_LOG + 200)]})
+ok("and the whole log is bounded", len(_flood["log"]) == M.MAX_LOG, str(len(_flood["log"])))
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

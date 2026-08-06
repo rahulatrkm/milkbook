@@ -514,10 +514,12 @@
     <button class="btn ghost" id="btnLocal" type="button">Save this app as a file</button>
     <p class="hint">Downloads the whole app as one file, with your book already inside it. Open that
       file any time — no internet, no server, nothing to install. It is a snapshot: days you record
-      here afterwards will not appear in it, so save a fresh one when you want it up to date.</p>
+      here afterwards will not appear in it, so save a fresh one when you want it up to date.
+      This is the only copy that lives anywhere but your phones, so it is worth keeping one.</p>
     <p class="hint" id="localNote" hidden><b>You are using a saved copy.</b> It works entirely offline
       and keeps its own book, separate from the one in your browser.</p>
   </div>
+  <button class="btn sec" id="btnLog" type="button" style="margin-bottom:8px">What changed, and who changed it</button>
   <button class="btn sec" id="btnVersions" type="button" style="margin-bottom:8px">Earlier versions of this book</button>
   <button class="btn sec" id="btnRestore" type="button" hidden style="margin-bottom:8px"></button>
   <button class="btn" id="saveSettings">Save</button>
@@ -608,6 +610,14 @@
   <div id="hList" style="margin-top:16px"></div>
 </div>
 
+<!-- what changed -->
+<div class="sheet" id="shLog">
+  <div class="grab"></div>
+  <h2>What changed</h2>
+  <p class="lede">Every change made to this book, newest first, with the phone that made it.</p>
+  <div id="gList"></div>
+</div>
+
 <!-- earlier versions of the book -->
 <div class="sheet" id="shHistoryBook">
   <div class="grab"></div>
@@ -663,6 +673,7 @@
     <button class="btn danger" id="sLeave" style="margin-top:8px">Stop syncing on this device</button>
   </div>
   <p class="hint" style="margin-top:16px">Anyone with the code can read the book, so only share it with your household. Changing it needs a phone the household has let in. No account, no email, no tracking.</p>
+  <p class="hint"><b>Sync is not a backup.</b> It is where your phones meet to agree, and it can be emptied at any time — whichever phone syncs next fills it again. Your records live on the phones. To keep a copy anywhere else, save the app as a file in settings.</p>
 </div>
 
 <!-- confirm -->
@@ -745,6 +756,7 @@ function freshStore(){
     locks: {},
     payments: {},
     rates: {},
+    log: [],
     sync: null,
   };
 }
@@ -760,6 +772,7 @@ function loadStore(){
     s.locks = s.locks || {};
     s.payments = s.payments || {};
     s.rates = s.rates || {};
+    s.log = Array.isArray(s.log) ? s.log : [];
     /* Closing the books used to be off unless you went looking for it, which is
        the wrong way round for a record people bill from. Books written before
        that changed are moved onto it once. `lockChoice` is set whenever the
@@ -1096,6 +1109,7 @@ function mergeStores(a, b){
     locks: {},
     payments: {},
     rates: {},
+    log: [],
   };
   const ad = a.days || {}, bd = b.days || {};
   for(const k of new Set([...Object.keys(ad), ...Object.keys(bd)])){
@@ -1130,6 +1144,14 @@ function mergeStores(a, b){
     if(!y){ out.rates[k] = x; continue; }
     out.rates[k] = (y.t || 0) > (x.t || 0) ? y : x;
   }
+  // The log only ever gains entries, so the union of both is the whole story.
+  // Trimmed to the same ceiling on every phone, or two phones that trimmed at
+  // different moments would keep handing each other back what the other dropped.
+  const seen = new Map();
+  for(const item of [...(a.log || []), ...(b.log || [])]){
+    if(item && item.i && !seen.has(item.i)) seen.set(item.i, item);
+  }
+  out.log = [...seen.values()].sort((x, y) => (y.t || 0) - (x.t || 0)).slice(0, LOG_MAX);
   return out;
 }
 
@@ -1371,6 +1393,7 @@ function addPayment(){
   }
   const on = $("pOn").value || today();
   const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  logChange(`Payment of ${fmtMoney(amount, store.settings.currency)} recorded`);
   writePayment(id, { on, a: amount, note: $("pNote").value.trim().slice(0, 60), t: Date.now(), del: false });
   $("pAmount").value = ""; $("pNote").value = "";
   toast(`${fmtMoney(amount, store.settings.currency)} recorded`,
@@ -1390,6 +1413,7 @@ function addPayment(){
 function removePayment(id){
   const p = store.payments[id];
   if(!p) return;
+  logChange(`Payment of ${fmtMoney(p.a, store.settings.currency)} removed`);
   writePayment(id, Object.assign({}, p, { del: true, t: Date.now() }));
   toast("Payment removed",
     () => { writePayment(id, Object.assign({}, store.payments[id], { del: false, t: Date.now() }));
@@ -1625,6 +1649,63 @@ function offerToReachBack(key, then){
   return true;
 }
 
+/* ---------------- what changed, and who changed it ----------------
+
+   Undo covers seconds and the kept copies cover days, but neither answers the
+   question a household actually asks: who marked the 12th as away? Written at
+   the level of what somebody did rather than what got stored, so settling two
+   hundred days before a settings change is one line and not two hundred.
+
+   It travels with the book, so the entry says which phone even when that phone
+   is not the one reading it. */
+const LOG_MAX = 300;
+function logChange(message){
+  if(!message) return;
+  store.log = Array.isArray(store.log) ? store.log : [];
+  store.log.unshift({
+    i: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    t: Date.now(),
+    d: device.id,
+    m: String(message).slice(0, 120),
+  });
+  if(store.log.length > LOG_MAX) store.log.length = LOG_MAX;
+}
+
+function whichPhone(deviceId){
+  if(deviceId === device.id) return "this phone";
+  const entry = (syncRoster || {})[deviceId];
+  return entry && entry.n ? entry.n : "another phone";
+}
+
+function renderLog(){
+  const box = $("gList"); box.innerHTML = "";
+  const list = Array.isArray(store.log) ? store.log : [];
+  if(!list.length){
+    box.innerHTML = `<div class="empty">Nothing recorded yet. Every change you make from here `
+      + `is listed, with the phone that made it.</div>`;
+    return;
+  }
+  let heading = "";
+  for(const item of list){
+    const when = new Date(Number(item.t) || 0);
+    const day = ymd(when);
+    if(day !== heading){
+      heading = day;
+      const h = document.createElement("label");
+      h.style.cssText = "display:block; font-size:12px; font-weight:600; color:var(--text-2); margin:12px 0 4px";
+      h.textContent = day === today() ? "Today"
+        : `${when.getDate()} ${MONTHS[when.getMonth()]} ${when.getFullYear()}`;
+      box.appendChild(h);
+    }
+    const row = document.createElement("div");
+    row.className = "pay";
+    row.innerHTML = `<span class="who"><b>${esc(item.m)}</b>`
+      + `<span>${pad2(when.getHours())}:${pad2(when.getMinutes())} \u00b7 `
+      + `${esc(whichPhone(item.d))}</span></span>`;
+    box.appendChild(row);
+  }
+}
+
 function cycle(key){
   const blocked = editBlocked(key);
   if(blocked === BEFORE_START) return offerToReachBack(key, () => cycle(key));
@@ -1637,6 +1718,8 @@ function cycle(key){
   const custom = dayInfo(store, key).custom ? dayInfo(store, key).qtyMl : null;
   const d = parseYmd(key);
   const label = STATE_WORDS[state] || state;
+  const wasLabel = STATE_WORDS[cur] || cur;
+  logChange(`${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}: ${wasLabel} \u2192 ${label}`);
   withUndo([key], () => writeDay(key, state, custom),
     `${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} \u2014 ${label}`);
 }
@@ -1869,6 +1952,24 @@ function fillBackTo(newStart){
 }
 
 function applySettings(next, keepHistory, after){
+  // Only the settings that move money are worth a line; the rest is noise.
+  const was = store.settings, cur = was.currency;
+  const changes = [];
+  if(Number(next.rateMinor) !== Number(was.rateMinor || 0))
+    changes.push(`Price ${fmtMoney(was.rateMinor || 0, cur)} \u2192 ${fmtMoney(next.rateMinor, cur)} a litre`);
+  if(Number(next.qtyMl) !== Number(was.qtyMl || 0))
+    changes.push(`Litres a day ${fmtL(was.qtyMl || 0)} \u2192 ${fmtL(next.qtyMl)}`);
+  if(next.startDate !== was.startDate) changes.push(`Book now starts ${next.startDate}`);
+  if(next.defaultState !== (was.defaultState || "yes"))
+    changes.push(`Unmarked days now count as ${STATE_WORDS[next.defaultState] || next.defaultState}`);
+  if(String(next.skipWeekly) !== String(was.skipWeekly || []))
+    changes.push(next.skipWeekly.length
+      ? `Vendor's days off: ${next.skipWeekly.map(i => DOW_SHORT[i]).join(", ")}`
+      : "Vendor now comes every day");
+  if(!!next.fullControl !== !!was.fullControl)
+    changes.push(next.fullControl ? "Full control turned on" : "Full control turned off");
+  for(const line of changes) logChange(line);
+
   if(keepHistory) settleHistory();
   store.settings = stampSettings(store.settings, next);
   if(after) after();
@@ -2062,6 +2163,9 @@ function restoreVersion(snap){
   try{ book = JSON.parse(snap.book); }catch(e){ return toast("That copy could not be read"); }
   takeSnapshot(true);                      // so the restore itself can be undone
   const now = Date.now();
+  // The log is a record of what happened, not part of the book being put back,
+  // so it survives the restore and carries the line saying it happened.
+  logChange(`Book put back to how it was on ${snap.on}`);
   const restamp = map => {
     const out = {};
     for(const [k, v] of Object.entries(map || {})) out[k] = Object.assign({}, v, { t: now });
@@ -2082,6 +2186,7 @@ function restoreVersion(snap){
 }
 
 $("btnVersions").addEventListener("click", () => { renderVersions(); sheet("shHistoryBook"); });
+$("btnLog").addEventListener("click", () => { renderLog(); sheet("shLog"); });
 
 $("btnLocal").addEventListener("click", downloadLocalCopy);
 $("btnRestore").addEventListener("click", () => {
@@ -2146,6 +2251,9 @@ $("dSave").addEventListener("click", () => {
   if(blocked){ sheet(null); return toast(blocked); }
   const q = clampQty(parseFloat($("dQty").value || "0") * 1000);
   const state = editState;
+  const d = parseYmd(editKey);
+  logChange(`${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}: set to ${STATE_WORDS[state] || state}`
+    + (state === "yes" ? ` at ${fmtL(q)} L` : ""));
   sheet(null);
   withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null), "Updated");
 });
@@ -2212,6 +2320,8 @@ function applyRange(state){
     return toast(r.locked.length ? "Those days cannot be changed from here" : "That range has no days");
   const word = STATE_WORDS[state] || state;
   const skipped = r.locked.length ? ` \u00b7 ${r.locked.length} skipped, closed` : "";
+  logChange(`${r.keys.length} day${r.keys.length === 1 ? "" : "s"} marked ${word}, `
+    + `${r.keys[0]} to ${r.keys[r.keys.length - 1]}`);
   withUndo(r.keys, () => { for(const k of r.keys) writeDay(k, state, null); },
     `${r.keys.length} ${r.keys.length === 1 ? "day" : "days"} marked ${word}${skipped}`);
 }
@@ -2471,7 +2581,7 @@ async function doSync(quiet){
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: store.settings, days: store.days,
                              locks: store.locks || {}, payments: store.payments || {},
-                             rates: store.rates || {},
+                             rates: store.rates || {}, log: store.log || [],
                              device, approve: pendingApprovals, revoke: pendingRemovals }),
       signal: ctl.signal,
     });
@@ -2483,7 +2593,7 @@ async function doSync(quiet){
     const merged = mergeStores(store, remote);
     store.settings = merged.settings; store.days = merged.days;
     store.locks = merged.locks; store.payments = merged.payments;
-    store.rates = merged.rates;
+    store.rates = merged.rates; store.log = merged.log;
     saveStore(store); render();
     if(openSheet === "shPay") renderPayments();   // the sheet in front of you is not exempt
     if(openSheet === "shSync") renderSync();
