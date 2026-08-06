@@ -655,6 +655,12 @@
   <div class="grab"></div>
   <h2>Sync across phones</h2>
   <p class="lede">Your data lives on this device and works offline. Sync keeps a copy so your family's phones agree.</p>
+  <div class="field">
+    <label for="sName">This phone is called</label>
+    <input id="sName" type="text" maxlength="40" placeholder="e.g. Mum's phone" autocomplete="off" />
+    <p class="hint">Shown to the rest of the household when this phone asks to join, and against every
+      change it makes. Two phones both called "Android phone" are impossible to tell apart.</p>
+  </div>
   <div id="syncOff">
     <button class="btn" id="sCreate">Create a sync code</button>
     <div class="field" style="margin-top:16px"><label for="sJoin">or join with an existing code</label><input id="sJoin" type="text" placeholder="e.g. K4M2-P8QX-7T3B" autocomplete="off" spellcheck="false" /></div>
@@ -1666,15 +1672,18 @@ function logChange(message){
     i: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
     t: Date.now(),
     d: device.id,
+    // The name as it was when the change was made. A phone removed from the
+    // book later is no longer in the roster, but it still made the change.
+    n: String(device.name || "").slice(0, 40),
     m: String(message).slice(0, 120),
   });
   if(store.log.length > LOG_MAX) store.log.length = LOG_MAX;
 }
 
-function whichPhone(deviceId){
-  if(deviceId === device.id) return "this phone";
-  const entry = (syncRoster || {})[deviceId];
-  return entry && entry.n ? entry.n : "another phone";
+function whichPhone(item){
+  if(item.d === device.id) return "this phone";
+  const entry = (syncRoster || {})[item.d];
+  return item.n || (entry && entry.n) || "another phone";
 }
 
 function renderLog(){
@@ -1701,7 +1710,7 @@ function renderLog(){
     row.className = "pay";
     row.innerHTML = `<span class="who"><b>${esc(item.m)}</b>`
       + `<span>${pad2(when.getHours())}:${pad2(when.getMinutes())} \u00b7 `
-      + `${esc(whichPhone(item.d))}</span></span>`;
+      + `${esc(whichPhone(item))}</span></span>`;
     box.appendChild(row);
   }
 }
@@ -2497,7 +2506,14 @@ const DEVICE_KEY = "milkbook_device_v1";
 function thisDevice(){
   try{
     const saved = JSON.parse(localStorage.getItem(DEVICE_KEY) || "null");
-    if(saved && saved.id && saved.key) return saved;
+    if(saved && saved.id && saved.key){
+      // Records written before phones could be named still need one.
+      if(!saved.name){
+        saved.name = deviceName();
+        try{ localStorage.setItem(DEVICE_KEY, JSON.stringify(saved)); }catch(e){}
+      }
+      return saved;
+    }
   }catch(e){}
   const rand = n => {
     const a = new Uint8Array(n); crypto.getRandomValues(a);
@@ -2618,6 +2634,7 @@ function renderSync(){
   $("syncOff").style.display = on ? "none" : "";
   $("syncOn").style.display = on ? "" : "none";
   $("sCode").textContent = on ? store.sync : "\u2014";
+  if(document.activeElement !== $("sName")) $("sName").value = device.name || "";
   const waiting = !!(syncStanding && syncStanding.ok === false
                      && syncStanding.why !== "no-device");
   $("syncSub").textContent = !on ? "Share one code with your family"
@@ -2651,7 +2668,8 @@ function renderPeople(){
       const isMe = id === device.id;
       label.innerHTML = `<div style="font-size:14px; font-weight:550">${esc(roster[id].n)}`
         + (isMe ? ' <span style="font-weight:400; color:var(--text-3)">\u00b7 this phone</span>' : "")
-        + `</div><div style="font-size:11.5px; color:var(--text-3); letter-spacing:.08em">${esc(roster[id].label || "")}</div>`;
+        + `</div><div style="font-size:11.5px; color:var(--text-3)">`
+        + `check code <span style="letter-spacing:.08em; font-weight:600">${esc(roster[id].label || "")}</span></div>`;
       row.appendChild(label);
       // Only a phone that is itself on the book may let another in or put it
       // out, so the buttons are not offered to one that is still waiting.
@@ -2846,6 +2864,20 @@ async function joinCode(code){
 }
 
 $("btnSync").addEventListener("click", () => { renderSync(); sheet("shSync"); });
+/* Naming the phone. The default comes from the browser, so a household of
+   Android phones is a list of identical rows; the name is what makes the roster
+   and the change log mean anything. */
+$("sName").addEventListener("change", () => {
+  const name = $("sName").value.trim().slice(0, 40) || deviceName();
+  $("sName").value = name;
+  device.name = name;
+  try{ localStorage.setItem(DEVICE_KEY, JSON.stringify(device)); }catch(e){}
+  renderPeople();
+  // The mirror takes the name from whatever the phone last sent, so one sync
+  // is enough for the rest of the household to see it.
+  if(store.sync) doSync(true);
+  toast(`This phone is called ${name}`);
+});
 $("sCreate").addEventListener("click", () => {
   store.sync = newCode(); saveStore(store); renderSync(); doSync(false); toast("Sync on");
 });

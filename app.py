@@ -294,6 +294,7 @@ def sanitise(book: dict) -> dict:
                 "i": entry_id,
                 "t": int(item.get("t") or 0),
                 "d": str(item.get("d") or "")[:64],
+                "n": str(item.get("n") or "")[:40],
                 "m": str(item.get("m") or "")[:120],
             })
 
