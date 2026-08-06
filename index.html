@@ -2367,16 +2367,31 @@ async function writeHandle(handle, text){
   await w.close();
 }
 
-function backupText(){
+/** Just the book, with nothing that changes on its own — so two calls with no
+    edits between them produce identical text, and an unchanged copy can be
+    recognised without keeping a second copy of it around. */
+function bookPayload(){
   return JSON.stringify({
-    milkbook: 1,
-    at: Date.now(),
-    book: {
-      settings: store.settings, days: store.days, locks: store.locks,
-      payments: store.payments, rates: store.rates, log: store.log || [],
-    },
+    settings: store.settings, days: store.days, locks: store.locks,
+    payments: store.payments, rates: store.rates, log: store.log || [],
   });
 }
+
+function backupText(){
+  return JSON.stringify({ milkbook: 1, at: Date.now(), book: JSON.parse(bookPayload()) });
+}
+
+/* A short fingerprint of what was last written somewhere, so a scheduled copy
+   of a book nobody has touched costs nothing. FNV-1a: a few nanoseconds per
+   character and no dependency. */
+function markOf(text){
+  let h = 2166136261;
+  for(let i = 0; i < text.length; i++){ h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36) + "." + text.length;
+}
+const MARK_KEY = dest => `milkbook_sent_${dest}_v1`;
+const lastSent = dest => { try{ return localStorage.getItem(MARK_KEY(dest)) || ""; }catch(e){ return ""; } };
+const rememberSent = (dest, mark) => { try{ localStorage.setItem(MARK_KEY(dest), mark); }catch(e){} };
 
 function backupEvery(){
   try{ return localStorage.getItem(BACKUP_EVERY_KEY) || "week"; }catch(e){ return "week"; }
@@ -2420,7 +2435,10 @@ async function reconnectFile(){
 async function writeToBackupFile(){
   if(!fileHandle) return false;
   if(!await permitted(fileHandle, false)){ fileBlocked = true; renderBackupNote(); return false; }
+  const body = bookPayload(), mark = markOf(body);
+  if(mark === lastSent("file")){ fileBlocked = false; markBackedUp(); return true; }
   await writeHandle(fileHandle, backupText());
+  rememberSent("file", mark);
   fileBlocked = false;
   markBackedUp();
   return true;
@@ -2566,7 +2584,11 @@ async function findDriveFile(){
   return (body.files && body.files[0] && body.files[0].id) || "";
 }
 
-async function driveUpload(){
+async function driveUpload(force){
+  const body = bookPayload(), mark = markOf(body);
+  // Re-uploading a book nobody has touched costs a round trip, a write to
+  // somebody's Drive and a version in their file history, for no change at all.
+  if(!force && mark === lastSent("drive")){ markBackedUp(); return; }
   let id = driveFileId() || await findDriveFile();
   const text = backupText();
   let r;
@@ -2575,15 +2597,16 @@ async function driveUpload(){
       { method: "PATCH", headers: { "Content-Type": "application/json" }, body: text });
   }else{
     const boundary = "milkbook" + Math.random().toString(36).slice(2);
-    const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`
+    const body2 = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`
       + JSON.stringify({ name: DRIVE_NAME, mimeType: "application/json" })
       + `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${text}\r\n--${boundary}--`;
     r = await driveCall("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-      { method: "POST", headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body });
+      { method: "POST", headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body: body2 });
   }
   if(!r.ok) throw new Error("upload " + r.status);
   const saved = await r.json();
   if(saved && saved.id){ try{ localStorage.setItem(DRIVE_ID_KEY, saved.id); }catch(e){} }
+  rememberSent("drive", mark);
   markBackedUp();
 }
 
@@ -2612,7 +2635,7 @@ async function driveSync(mayAsk){
       if(after !== before) logChange(`Took ${after - before} day${after - before === 1 ? "" : "s"} back from Drive`);
       saveStore(store); render();
     }
-    await driveUpload();
+    await driveUpload(mayAsk);
   }finally{
     driveBusy = false;
   }
@@ -3535,8 +3558,12 @@ $("btnLock").addEventListener("click", () => {
   }
   if(IS_LOCAL_COPY) markLocalCopy();
   loadBackupFile();
-  // Reading Drive back on open is what makes a new phone only have to sign in.
-  if(driveOn()) driveSync(false).catch(() => {});
+  /* Drive on a schedule, not on every open. Asking Google for a token needs a
+     popup, so touching Drive every time the app started meant a sign-in window
+     every time somebody opened it to mark one day. A book that has never been
+     read back is the exception: that is the new phone this exists for. */
+  if(driveOn() && (backupDue() || !Object.keys(store.days).length))
+    driveSync(false).catch(() => {});
   if("serviceWorker" in navigator && !IS_LOCAL_COPY)
     navigator.serviceWorker.register("sw.js").catch(() => {});
   document.addEventListener("visibilitychange", () => { if(!document.hidden && store.sync) doSync(true); });
