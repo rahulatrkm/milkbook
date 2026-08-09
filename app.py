@@ -159,7 +159,7 @@ def _carry_unknown(raw: dict, known: set) -> dict:
 
 KNOWN_SETTINGS = {"t", "at", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
                   "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl",
-                  "kinds"}
+                  "kinds", "vendors"}
 # The roster is the server's, not the client's: it is never read out of an
 # incoming body, only changed through approve/revoke by a device already in it.
 # That way a phone that has not been let in cannot write itself an invitation.
@@ -174,6 +174,35 @@ DEVICE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
 MAX_DEVICES = 50
 KIND_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
 MAX_KINDS = 24
+MAX_VENDORS = 12
+# More than a few deliveries on one date is a different app. The ceiling is here
+# so a bad merge cannot grow a day without end.
+MAX_EXTRA = 6
+
+
+def _clean_vendors(raw) -> list:
+    """The people who bring the milk. The book's original one is not in here:
+    it is settings['vendor'], and stays vendor "" so nothing has to migrate."""
+    out: list = []
+    seen: set = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:MAX_VENDORS]:
+        if not isinstance(item, dict):
+            continue
+        vid = item.get("id")
+        if not isinstance(vid, str) or not KIND_ID_RE.match(vid) or vid in seen:
+            continue
+        vendor = {
+            "id": vid,
+            "name": str(item.get("name") or "")[:60],
+            "t": int(item["t"]) if isinstance(item.get("t"), (int, float)) else 0,
+        }
+        if item.get("off"):
+            vendor["off"] = True
+        seen.add(vid)
+        out.append(vendor)
+    return out
 
 
 def _clean_kinds(raw) -> list:
@@ -200,6 +229,11 @@ def _clean_kinds(raw) -> list:
             "rateMinor": max(0, min(int(rate), 10_000_000)) if isinstance(rate, (int, float)) else 0,
             "t": int(item["t"]) if isinstance(item.get("t"), (int, float)) else 0,
         }
+        # Which vendor sells it. Two vendors charging differently for the same
+        # milk are two kinds, which is the whole reason this field exists.
+        vid = item.get("v")
+        if isinstance(vid, str) and KIND_ID_RE.match(vid):
+            kind["v"] = vid
         if item.get("off"):
             kind["off"] = True
         seen.add(kid)
@@ -208,11 +242,11 @@ def _clean_kinds(raw) -> list:
 
 
 def _merge_kinds(a_kinds, b_kinds) -> list:
-    """Union by id, newest wins per kind.
+    """Union by id, newest wins per entry. Used for kinds and for vendors.
 
-    Last-write-wins on the whole list would drop a kind added on one phone the
+    Last-write-wins on the whole list would drop one added on one phone the
     moment another phone saved any setting — and every day already recorded
-    against that kind would quietly fall back to the default price.
+    against it would quietly fall back to the default price.
     """
     out: dict = {}
     for kind in list(a_kinds or []) + list(b_kinds or []):
@@ -256,6 +290,8 @@ def sanitise(book: dict) -> dict:
         # with an empty list and erase them.
         if "kinds" in raw_settings:
             settings["kinds"] = _clean_kinds(raw_settings.get("kinds"))
+        if "vendors" in raw_settings:
+            settings["vendors"] = _clean_vendors(raw_settings.get("vendors"))
         # When each individual setting last changed. Without this the whole
         # settings object is one item with one timestamp, and because every
         # field above is given a default whether the client sent it or not, a
@@ -289,6 +325,24 @@ def sanitise(book: dict) -> dict:
             kind = entry.get("k")
             if isinstance(kind, str) and KIND_ID_RE.match(kind):
                 clean["k"] = kind
+            # Anything else that came the same day, which is how two vendors on
+            # one date are held. Same rebuild rule: unnamed here, dropped.
+            more = entry.get("more")
+            if isinstance(more, list):
+                extras = []
+                for x in more[:MAX_EXTRA]:
+                    if not isinstance(x, dict):
+                        continue
+                    xk = x.get("k")
+                    if not isinstance(xk, str) or not KIND_ID_RE.match(xk):
+                        continue
+                    one = {"k": xk}
+                    xq = x.get("q")
+                    if isinstance(xq, (int, float)):
+                        one["q"] = max(0, min(int(xq), 100_000))
+                    extras.append(one)
+                if extras:
+                    clean["more"] = extras
             days[key] = clean
 
     # Month locks. Stored the same way as a day so they merge the same way: a
@@ -331,6 +385,11 @@ def sanitise(book: dict) -> dict:
                 "t": int(entry.get("t") or 0),
                 "del": bool(entry.get("del")),
             }
+            # Who the money went to. Absent means the book's original vendor,
+            # which is who every payment made before this went to.
+            pv = entry.get("v")
+            if isinstance(pv, str) and KIND_ID_RE.match(pv):
+                payments[key]["v"] = pv
 
     # What a litre cost, from a given date onwards. Without this a price rise
     # restates every bill ever sent, so the history is part of the record.
@@ -499,6 +558,8 @@ def merge(a: dict, b: dict) -> dict:
     settings["t"] = max(a_set.get("t") or 0, b_set.get("t") or 0)
     if "kinds" in a_set or "kinds" in b_set:
         settings["kinds"] = _merge_kinds(a_set.get("kinds"), b_set.get("kinds"))
+    if "vendors" in a_set or "vendors" in b_set:
+        settings["vendors"] = _merge_kinds(a_set.get("vendors"), b_set.get("vendors"))
 
     def newest(x_map: dict, y_map: dict) -> dict:
         out = {}
@@ -565,20 +626,23 @@ def rate_for(book: dict, day_key: str) -> int:
     return int(rates[best].get("r") or 0)
 
 
-def rate_for_day(book: dict, day_key: str) -> int:
-    """The price actually charged: the kind's own, or the default timeline.
+def rate_for_kind(book: dict, day_key: str, kind_id: str) -> int:
+    """The price of one kind on a day: its own, or the default timeline.
 
     A kind nobody here has heard of falls back to the default rather than
     billing at nothing — that happens for a moment when one phone adds a kind
     and another has not synced it yet.
     """
-    entry = (book.get("days") or {}).get(day_key) or {}
-    kid = entry.get("k")
-    if kid:
+    if kind_id:
         for kind in (book.get("settings") or {}).get("kinds") or []:
-            if isinstance(kind, dict) and kind.get("id") == kid:
+            if isinstance(kind, dict) and kind.get("id") == kind_id:
                 return int(kind.get("rateMinor") or 0)
     return rate_for(book, day_key)
+
+
+def rate_for_day(book: dict, day_key: str) -> int:
+    entry = (book.get("days") or {}).get(day_key) or {}
+    return rate_for_kind(book, day_key, entry.get("k") or "")
 
 
 def _round_half_up(value: float) -> int:
@@ -589,6 +653,24 @@ def _round_half_up(value: float) -> int:
     calendar feed is the kind of thing somebody notices and cannot explain.
     """
     return int(Decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def deliveries_of(book: dict, day_key: str) -> list:
+    """Every delivery on one day: the one on the record, then any others."""
+    state, qty = day_state(book, day_key)
+    if state != "yes":
+        return []
+    entry = (book.get("days") or {}).get(day_key) or {}
+    settings = book.get("settings") or {}
+    out = [(entry.get("k") or "", qty, rate_for_kind(book, day_key, entry.get("k") or ""))]
+    for x in (entry.get("more") or []):
+        if not isinstance(x, dict) or not x.get("k"):
+            continue
+        xq = x.get("q")
+        out.append((x["k"],
+                    int(xq) if isinstance(xq, (int, float)) else int(settings.get("qtyMl") or 1000),
+                    rate_for_kind(book, day_key, x["k"])))
+    return out
 
 
 def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
@@ -611,9 +693,9 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
         state, qty = day_state(book, key)
         if state == "yes":
             delivered += 1
-            total_ml += qty
-            r = rate_for_day(book, key)
-            by_rate[r] = by_rate.get(r, 0) + qty
+            for _kind, got_qty, r in deliveries_of(book, key):
+                total_ml += got_qty
+                by_rate[r] = by_rate.get(r, 0) + got_qty
         elif state == "skip":
             skipped += 1
         elif state == "away":

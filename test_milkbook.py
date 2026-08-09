@@ -807,5 +807,75 @@ _stale = {k["id"]: k for k in M.merge(_edited, _phoneA)["settings"]["kinds"]}
 ok("and an older copy of it does not win back",
    _stale["toned"]["rateMinor"] == 5500, json.dumps(_stale))
 
+print("\nMORE THAN ONE VENDOR")
+# Two vendors selling the same milk at different prices are two kinds, each
+# naming its vendor. The day names the kind, so it names the vendor too.
+_vend = M.sanitise({
+    "settings": {"t": 1, "vendor": "Ramesh", "rateMinor": 6000, "qtyMl": 1000,
+                 "startDate": "2026-03-01", "defaultState": "none",
+                 "vendors": [{"id": "suresh", "name": "Suresh", "t": 5}],
+                 "kinds": [{"id": "rcow", "name": "Cow", "rateMinor": 5500, "v": "", "t": 5},
+                           {"id": "scow", "name": "Cow", "rateMinor": 6200, "v": "suresh", "t": 5},
+                           {"id": "sbuf", "name": "Buffalo", "rateMinor": 9000, "v": "suresh", "t": 5}]},
+    "days": {"2026-03-01": {"s": "yes", "t": 1, "k": "rcow", "more": [{"k": "sbuf"}]},
+             "2026-03-02": {"s": "yes", "t": 1, "k": "scow"}},
+})
+ok("vendors survive a round trip", len(_vend["settings"]["vendors"]) == 1,
+   json.dumps(_vend["settings"].get("vendors")))
+ok("a kind remembers who sells it",
+   {k["id"]: k.get("v", "") for k in _vend["settings"]["kinds"]}
+   == {"rcow": "", "scow": "suresh", "sbuf": "suresh"})
+ok("the same milk can carry two prices",
+   {k["id"]: k["rateMinor"] for k in _vend["settings"]["kinds"]}["rcow"] == 5500
+   and {k["id"]: k["rateMinor"] for k in _vend["settings"]["kinds"]}["scow"] == 6200)
+
+ok("a second delivery on one day survives", _vend["days"]["2026-03-01"].get("more") == [{"k": "sbuf"}],
+   json.dumps(_vend["days"]["2026-03-01"]))
+_march = M.month_summary(_vend, 2026, 3, "2026-03-02")
+ok("both deliveries on a day are billed", _march["amountMinor"] == 5500 + 9000 + 6200,
+   str(_march["amountMinor"]))
+ok("and both sets of litres counted", _march["totalMl"] == 3000, str(_march["totalMl"]))
+ok("but a day with two deliveries is still one day", _march["delivered"] == 2, str(_march["delivered"]))
+ok("the server and the page agree on the total",
+   _march["amountMinor"] == 20700, str(_march["amountMinor"]))
+
+_q = M.sanitise({"settings": {"t": 1, "rateMinor": 6000, "qtyMl": 1000, "startDate": "2026-03-01",
+                              "defaultState": "none",
+                              "kinds": [{"id": "a", "rateMinor": 5000, "t": 1},
+                                        {"id": "b", "rateMinor": 9000, "t": 1}]},
+                 "days": {"2026-03-01": {"s": "yes", "t": 1, "k": "a", "more": [{"k": "b", "q": 500}]}}})
+ok("a second delivery keeps its own quantity",
+   M.month_summary(_q, 2026, 3, "2026-03-01")["amountMinor"] == 5000 + 4500,
+   str(M.month_summary(_q, 2026, 3, "2026-03-01")["amountMinor"]))
+
+ok("a junk extra is dropped",
+   "more" not in M.sanitise({"days": {"2026-03-01": {"s": "yes", "t": 1, "more": [{"k": "../etc"}]}}})["days"]["2026-03-01"])
+ok("extras that are not a list are ignored",
+   "more" not in M.sanitise({"days": {"2026-03-01": {"s": "yes", "t": 1, "more": "b"}}})["days"]["2026-03-01"])
+ok("too many extras on one day are cut off",
+   len(M.sanitise({"days": {"2026-03-01": {"s": "yes", "t": 1,
+                                           "more": [{"k": f"k{i}"} for i in range(M.MAX_EXTRA + 10)]}}})
+       ["days"]["2026-03-01"]["more"]) == M.MAX_EXTRA)
+ok("too many vendors are cut off",
+   len(M.sanitise({"settings": {"vendors": [{"id": f"v{i}"} for i in range(M.MAX_VENDORS + 10)]}})
+       ["settings"]["vendors"]) == M.MAX_VENDORS)
+ok("a phone that has never heard of vendors does not send an empty list",
+   "vendors" not in M.sanitise({"settings": {"t": 1, "vendor": "Dairy"}})["settings"])
+
+ok("a payment can name the vendor it went to",
+   M.sanitise({"settings": {}, "payments": {"p1": {"on": "2026-03-02", "a": 100, "t": 1, "v": "suresh"}}})
+   ["payments"]["p1"]["v"] == "suresh")
+ok("a payment from before vendors existed names nobody",
+   "v" not in M.sanitise({"settings": {}, "payments": {"p1": {"on": "2026-03-02", "a": 100, "t": 1}}})
+   ["payments"]["p1"])
+
+_va = M.sanitise({"settings": {"t": 10, "at": {"vendors": 10},
+                               "vendors": [{"id": "suresh", "name": "Suresh", "t": 10}]}, "days": {}})
+_vb = M.sanitise({"settings": {"t": 11, "at": {"vendors": 11},
+                               "vendors": [{"id": "gopal", "name": "Gopal", "t": 11}]}, "days": {}})
+ok("two phones each adding a vendor keep both",
+   sorted(v["id"] for v in M.merge(_va, _vb)["settings"]["vendors"]) == ["gopal", "suresh"],
+   json.dumps(M.merge(_va, _vb)["settings"]["vendors"]))
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)
