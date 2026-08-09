@@ -144,6 +144,13 @@
   .kindrow .kDel:hover{color:var(--bad); border-color:var(--bad)}
   .chip.add{border-style:dashed; color:var(--text-3)}
   .chip.add:hover{border-style:solid; color:var(--accent); border-color:var(--accent)}
+  .kindrow .kVendor{flex:0 0 108px; font:inherit; font-size:13.5px; padding:9px 8px; border-radius:9px;
+    border:1px solid var(--line-2); background:var(--surface); color:var(--text)}
+  .morerow{display:flex; gap:7px; align-items:center; margin-bottom:7px}
+  .morerow select{flex:1 1 auto; min-width:0; font:inherit; font-size:14px; padding:9px 10px;
+    border-radius:9px; border:1px solid var(--line-2); background:var(--surface); color:var(--text)}
+  .morerow input{flex:0 0 78px; min-width:0; font:inherit; font-size:14px; padding:9px 10px;
+    border-radius:9px; border:1px solid var(--line-2); background:var(--surface); color:var(--text)}
 
   .monthside{display:flex; flex-direction:column; align-items:flex-end; gap:7px}
   .lockchip{display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
@@ -484,6 +491,14 @@
     <div class="field"><label for="fStart">Tracking from</label><input id="fStart" type="date" /></div>
   </div>
   <div class="field">
+    <label>Other vendors</label>
+    <div id="fVendors"></div>
+    <div class="chips" id="fVendorAdd"></div>
+    <p class="hint">Only if more than one person brings milk. The name at the top is your first vendor. Each kind
+      below belongs to one of them, which is how two vendors can charge different prices for the same milk — and
+      each is billed and owed separately.</p>
+  </div>
+  <div class="field">
     <label>Other kinds of milk</label>
     <div id="fKinds"></div>
     <div class="chips" id="fKindAdd"></div>
@@ -610,6 +625,12 @@
     <input id="dQty" type="number" inputmode="decimal" step="0.25" min="0" max="100" />
     <p class="hint">Leave as your default unless it was different.</p>
   </div>
+  <div class="field" id="dMoreWrap">
+    <label>Anything else that came</label>
+    <div id="dMore"></div>
+    <button type="button" class="btn ghost" id="dAddMore">Add another delivery</button>
+    <p class="hint">For a day when more than one vendor came, or two sorts arrived together.</p>
+  </div>
   <button class="btn" id="dSave">Save</button>
 </div>
 
@@ -651,6 +672,7 @@
   <div class="billtotal"><span>Billed so far</span><b class="num" id="pBilled">—</b></div>
   <div class="billtotal"><span>Paid so far</span><b class="num" id="pPaid">—</b></div>
   <div class="billtotal"><span id="pBalLabel">Remaining</span><b class="num" id="pBalance">—</b></div>
+  <div id="pByVendor"></div>
 
   <div class="field" style="margin-top:18px">
     <label for="pAmount">Record a payment</label>
@@ -659,6 +681,7 @@
       <input id="pOn" type="date" />
       <button class="btn go" id="pAdd" style="width:auto; padding:11px 18px">Add</button>
     </div>
+    <select id="pVendor" style="margin-top:8px; display:none" aria-label="Who this payment went to"></select>
     <input id="pNote" type="text" maxlength="60" placeholder="Note — cash, UPI, transfer (optional)"
            style="margin-top:8px" />
     <p class="hint">Part payments are fine. The balance is simply everything billed minus everything paid.</p>
@@ -1013,8 +1036,33 @@ function dayInfo(store, key){
   const fallback = (st.skipWeekly || []).includes(dow) ? "off" : (st.defaultState || "yes");
   const state = e && e.s ? e.s : fallback;
   const qtyMl = state === "yes" ? (e && e.q != null ? e.q : st.qtyMl) : 0;
-  return { state, qtyMl, custom: !!(e && e.q != null), kind: (e && e.k) || "" };
+  return {
+    state, qtyMl, custom: !!(e && e.q != null), kind: (e && e.k) || "",
+    // Anything else that came the same day, which is how two vendors on one
+    // date are held without disturbing the record the whole app already reads.
+    extras: (e && Array.isArray(e.more) ? e.more : []).filter(x => x && typeof x === "object"),
+  };
 }
+
+/* ---------------- vendors ----------------
+
+   A book began with one vendor and one price, and that vendor is still vendor
+   "" — the name in settings. Nothing about an existing book moves. Others are
+   added alongside, and because a kind of milk belongs to a vendor, two vendors
+   selling the same milk at different prices are simply two kinds. */
+const extraVendors = store => (store.settings.vendors || []).filter(v => v && v.id);
+const vendorsOf = store =>
+  [{ id: "", name: store.settings.vendor || "My vendor", t: 0 }, ...extraVendors(store)];
+const liveVendors = store => vendorsOf(store).filter(v => !v.off);
+const vendorById = (store, id) => vendorsOf(store).find(v => v.id === (id || "")) || null;
+const vendorName = (store, id) => { const v = vendorById(store, id); return v ? (v.name || "Unnamed") : ""; };
+/** Which vendor a kind comes from. No kind means the book's original vendor. */
+const vendorOfKind = (store, kindId) => {
+  const k = kindId ? kindById(store, kindId) : null;
+  return k ? (k.v || "") : "";
+};
+/** Whether the book is worth splitting by vendor at all. */
+const manyVendors = store => liveVendors(store).length > 1;
 
 /* ---------------- kinds of milk ----------------
 
@@ -1035,6 +1083,7 @@ const kindName = (store, id) => { const k = kindById(store, id); return k ? (k.n
    against it must keep the price they were billed at, and a vendor who stops
    selling something does not un-sell what he already delivered. */
 const MAX_KINDS = 24;
+const MAX_VENDORS = 12;
 
 /* Six colours that stay apart from the state colours and from each other. The
    dot is a hint that this day was not the ordinary milk; the name is carried in
@@ -1072,15 +1121,34 @@ function rateFor(store, dayKey){
                        : (Number(rates[best].r) || 0);
 }
 
-/** What the milk actually delivered that day cost: its kind's price, or the default.
+/** What a litre of a given kind cost on a day: its own price, or the default.
 
     A kind this phone has not heard of yet falls back to the default rather than
     billing at nothing, which is what a day looks like in the moment between one
     phone adding a kind and another syncing it. */
-function rateForDay(store, dayKey, info){
-  const id = (info || dayInfo(store, dayKey)).kind;
-  const k = id ? kindById(store, id) : null;
+function rateForKind(store, dayKey, kindId){
+  const k = kindId ? kindById(store, kindId) : null;
   return k ? (Number(k.rateMinor) || 0) : rateFor(store, dayKey);
+}
+
+function rateForDay(store, dayKey, info){
+  return rateForKind(store, dayKey, (info || dayInfo(store, dayKey)).kind);
+}
+
+/** Everything that came on one day — the delivery on the record, then any others. */
+function deliveriesOf(store, key, info){
+  const i = info || dayInfo(store, key);
+  if(i.state !== "yes") return [];
+  const out = [{ kind: i.kind, qtyMl: i.qtyMl, rateMinor: rateForKind(store, key, i.kind) }];
+  for(const x of i.extras){
+    const kind = x.k || "";
+    out.push({
+      kind,
+      qtyMl: x.q != null ? Number(x.q) || 0 : store.settings.qtyMl,
+      rateMinor: rateForKind(store, key, kind),
+    });
+  }
+  return out;
 }
 
 function monthSummary(store, y, m, todayKey){
@@ -1093,6 +1161,9 @@ function monthSummary(store, y, m, todayKey){
   // And per kind as well, so a bill can say how much of each sort came rather
   // than only what the month cost altogether.
   const byKind = new Map();
+  // And per vendor, because with two of them one balance is not a number you
+  // can pay anybody: each is owed separately.
+  const byVendor = new Map();
   for(let d = 1; d <= n; d++){
     const key = keyOf(y, m, d);
     if(key > todayKey) continue;
@@ -1103,12 +1174,19 @@ function monthSummary(store, y, m, todayKey){
     if(key < start && !store.days[key]) continue;
     const info = dayInfo(store, key);
     if(info.state === "yes"){
-      delivered++; totalMl += info.qtyMl;
-      const r = rateForDay(store, key, info);
-      byRate.set(r, (byRate.get(r) || 0) + info.qtyMl);
-      const cur = byKind.get(info.kind) || { ml: 0, days: 0, rateMinor: r };
-      cur.ml += info.qtyMl; cur.days++; cur.rateMinor = r;
-      byKind.set(info.kind, cur);
+      delivered++;
+      for(const got of deliveriesOf(store, key, info)){
+        totalMl += got.qtyMl;
+        byRate.set(got.rateMinor, (byRate.get(got.rateMinor) || 0) + got.qtyMl);
+        const k = byKind.get(got.kind) || { ml: 0, days: 0, rateMinor: got.rateMinor };
+        k.ml += got.qtyMl; k.days++; k.rateMinor = got.rateMinor;
+        byKind.set(got.kind, k);
+        const vid = vendorOfKind(store, got.kind);
+        const v = byVendor.get(vid) || { ml: 0, days: 0, amountMinor: 0 };
+        v.ml += got.qtyMl; v.days++;
+        v.amountMinor += Math.round(got.qtyMl * got.rateMinor / 1000);
+        byVendor.set(vid, v);
+      }
     }
     else if(info.state === "skip") skipped++;
     else if(info.state === "away") away++;
@@ -1117,7 +1195,7 @@ function monthSummary(store, y, m, todayKey){
   }
   let amountMinor = 0;
   for(const [r, ml] of byRate) amountMinor += Math.round(ml * r / 1000);
-  return { totalMl, delivered, skipped, away, off, pending, amountMinor, byKind };
+  return { totalMl, delivered, skipped, away, off, pending, amountMinor, byKind, byVendor };
 }
 
 /* What is pencilled in for days that have not happened yet.
@@ -1277,18 +1355,19 @@ function mergeSettings(a, b){
   }
   out.at = at;
   out.t = Math.max(mine.t || 0, theirs.t || 0);
-  /* Kinds are unioned by id, not taken whole from whichever phone saved last.
-     A list decided by one timestamp would drop a kind somebody added on another
-     phone the moment anyone changed any setting — and every day already
-     recorded against it would silently fall back to the default price. */
-  if("kinds" in mine || "kinds" in theirs){
+  /* Kinds and vendors are unioned by id, not taken whole from whichever phone
+     saved last. A list decided by one timestamp would drop one somebody added
+     on another phone the moment anyone changed any setting — and every day
+     already recorded against it would silently fall back to the default price. */
+  for(const field of ["kinds", "vendors"]){
+    if(!(field in mine) && !(field in theirs)) continue;
     const seen = new Map();
-    for(const k of [...(mine.kinds || []), ...(theirs.kinds || [])]){
+    for(const k of [...(mine[field] || []), ...(theirs[field] || [])]){
       if(!k || !k.id) continue;
       const prev = seen.get(k.id);
       if(!prev || (k.t || 0) >= (prev.t || 0)) seen.set(k.id, k);
     }
-    out.kinds = [...seen.values()].slice(0, MAX_KINDS);
+    out[field] = [...seen.values()].slice(0, MAX_KINDS);
   }
   return out;
 }
@@ -1364,14 +1443,15 @@ function mergeStores(a, b){
    in the book being summed and multiplied once. Those two give different
    answers by a paisa or so, and this one matches the bills the vendor actually
    handed over, which is the number an argument would be about. */
-function billedTotalMinor(store, todayKey){
+function billedTotalMinor(store, todayKey, vendorId){
   const start = store.settings.startDate;
   if(!start) return 0;
   const from = parseYmd(start), to = parseYmd(todayKey);
   let total = 0;
   let y = from.getFullYear(), m = from.getMonth();
   while(y < to.getFullYear() || (y === to.getFullYear() && m <= to.getMonth())){
-    total += monthSummary(store, y, m, todayKey).amountMinor;
+    const s = monthSummary(store, y, m, todayKey);
+    total += vendorId === undefined ? s.amountMinor : ((s.byVendor.get(vendorId) || {}).amountMinor || 0);
     m++; if(m > 11){ m = 0; y++; }
   }
   return total;
@@ -1382,22 +1462,33 @@ const livePayments = store =>
     .filter(([, p]) => p && !p.del)
     .map(([id, p]) => Object.assign({ id }, p));
 
-function paidTotalMinor(store){
-  return livePayments(store).reduce((sum, p) => sum + (Number(p.a) || 0), 0);
+/* A payment made before the book had more than one vendor names nobody, and is
+   read as money handed to the original vendor — which is who it went to. */
+const paymentVendor = p => p.v || "";
+
+function paidTotalMinor(store, vendorId){
+  return livePayments(store)
+    .filter(p => vendorId === undefined || paymentVendor(p) === vendorId)
+    .reduce((sum, p) => sum + (Number(p.a) || 0), 0);
 }
 
 /** Billed so far, paid so far, and which way the difference points. */
-function accountOf(store, todayKey){
-  const billedMinor = billedTotalMinor(store, todayKey);
-  const paidMinor = paidTotalMinor(store);
+function accountOf(store, todayKey, vendorId){
+  const billedMinor = billedTotalMinor(store, todayKey, vendorId);
+  const paidMinor = paidTotalMinor(store, vendorId);
   const balanceMinor = billedMinor - paidMinor;
   return {
     billedMinor, paidMinor, balanceMinor,
     owing: balanceMinor > 0,
     inCredit: balanceMinor < 0,
     settled: balanceMinor === 0,
-    count: livePayments(store).length,
+    count: livePayments(store).filter(p => vendorId === undefined || paymentVendor(p) === vendorId).length,
   };
+}
+
+/** The same sum, one vendor at a time, for a book that has more than one. */
+function accountsByVendor(store, todayKey){
+  return liveVendors(store).map(v => Object.assign({ vendor: v }, accountOf(store, todayKey, v.id)));
 }
 
 /** What has been paid against one month, by the date on the payment. */
@@ -1411,12 +1502,17 @@ function paidInMonthMinor(store, y, m){
 const fmtMoney = (minor, code) => symbolOf(code) + (minor / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtL = ml => (ml / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-function billText(store, y, m, todayKey){
+function billText(store, y, m, todayKey, vendorId){
   const s = monthSummary(store, y, m, todayKey);
   const cur = store.settings.currency;
-  // With more than one kind of milk in the month, one rate line would be a lie:
-  // the vendor's own bill separates them, so this does too.
-  const kinds = [...(s.byKind || new Map()).entries()];
+  const one = vendorId !== undefined;
+  // Each vendor is owed separately, so with more than one the bill is written
+  // for whichever one it is being handed to rather than for the household.
+  const kinds = [...(s.byKind || new Map()).entries()]
+    .filter(([id]) => !one || vendorOfKind(store, id) === vendorId);
+  const totalMl = kinds.reduce((a, [, k]) => a + k.ml, 0);
+  const amount = one ? ((s.byVendor.get(vendorId) || {}).amountMinor || 0) : s.amountMinor;
+  const days = one ? ((s.byVendor.get(vendorId) || {}).days || 0) : s.delivered;
   const split = kinds.length > 1
     ? kinds.map(([id, k]) =>
         `  ${(id ? kindName(store, id) : "Default") || "Unnamed"}: `
@@ -1424,23 +1520,24 @@ function billText(store, y, m, todayKey){
     : [];
   const lines = [
     `Milk bill \u2014 ${MONTHS[m]} ${y}`,
-    store.settings.vendor ? `Vendor: ${store.settings.vendor}` : null,
+    one ? `Vendor: ${vendorName(store, vendorId)}`
+        : (store.settings.vendor ? `Vendor: ${store.settings.vendor}` : null),
     ``,
-    `Delivered:  ${s.delivered} days`,
-    s.skipped ? `Skipped:    ${s.skipped} days` : null,
-    s.away ? `Away:       ${s.away} days` : null,
-    s.pending ? `Not recorded: ${s.pending} days (not billed)` : null,
+    `Delivered:  ${days} ${one ? "deliveries" : "days"}`,
+    !one && s.skipped ? `Skipped:    ${s.skipped} days` : null,
+    !one && s.away ? `Away:       ${s.away} days` : null,
+    !one && s.pending ? `Not recorded: ${s.pending} days (not billed)` : null,
     ``,
-    `Quantity:   ${fmtL(s.totalMl)} L`,
+    `Quantity:   ${fmtL(one ? totalMl : s.totalMl)} L`,
     ...(split.length ? [`By kind:`, ...split] : [`Rate:       ${fmtMoney(store.settings.rateMinor, cur)} / L`]),
-    `Total:      ${fmtMoney(s.amountMinor, cur)}`,
+    `Total:      ${fmtMoney(amount, cur)}`,
   ].filter(x => x !== null);
   return lines.join("\n");
 }
 
 /* ---------------- app state ---------------- */
 let store = loadStore();
-let viewY, viewM, editKey = null, editState = "yes", editKind = "";
+let viewY, viewM, editKey = null, editState = "yes", editKind = "", editExtras = [];
 const today = () => ymd(new Date());
 
 /* ---------------- render ---------------- */
@@ -1506,6 +1603,30 @@ function renderPayments(){
     : acc.inCredit
       ? "You have paid ahead. This is the credit sitting with your vendor."
       : "Everything billed since you started, against everything you have paid.";
+
+  /* With two vendors the combined figure above is not a number you can hand
+     anybody, so each one is owed separately underneath it. */
+  const split = $("pByVendor"); split.innerHTML = "";
+  const picker = $("pVendor");
+  if(manyVendors(store)){
+    for(const a of accountsByVendor(store, tk)){
+      const row = document.createElement("div");
+      row.className = "billtotal";
+      row.innerHTML = `<span>${esc(a.vendor.name || "Unnamed")}</span>`
+        + `<b class="num">${esc(fmtMoney(Math.abs(a.balanceMinor), cur))}`
+        + `${a.inCredit ? " in credit" : ""}</b>`;
+      split.appendChild(row);
+    }
+    picker.innerHTML = "";
+    for(const v of liveVendors(store)){
+      const o = document.createElement("option");
+      o.value = v.id; o.textContent = `Paid to ${v.name || "Unnamed"}`;
+      picker.appendChild(o);
+    }
+    picker.style.display = "";
+  } else {
+    picker.style.display = "none";
+  }
 
   const list = $("pList");
   // Only the month you are looking at. The running totals above are for the
@@ -1604,8 +1725,12 @@ function addPayment(){
   }
   const on = $("pOn").value || today();
   const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  logChange(`Payment of ${fmtMoney(amount, store.settings.currency)} recorded`);
-  writePayment(id, { on, a: amount, note: $("pNote").value.trim().slice(0, 60), t: Date.now(), del: false });
+  const to = manyVendors(store) ? ($("pVendor").value || "") : "";
+  logChange(`Payment of ${fmtMoney(amount, store.settings.currency)} recorded`
+    + (to ? ` to ${vendorName(store, to)}` : ""));
+  const entry = { on, a: amount, note: $("pNote").value.trim().slice(0, 60), t: Date.now(), del: false };
+  if(to) entry.v = to;
+  writePayment(id, entry);
   $("pAmount").value = ""; $("pNote").value = "";
   toast(`${fmtMoney(amount, store.settings.currency)} recorded`,
     () => { writePayment(id, Object.assign({}, store.payments[id], { del: true, t: Date.now() }));
@@ -1711,10 +1836,13 @@ function render(){  const tk = today();
       : info.state === "away" ? ICON_AWAY : info.state === "off" ? ICON_OFF : "";
     const kindDot = info.state === "yes" && info.kind
       ? `<span class="k" style="background:${kindColour(store, info.kind)}"></span>` : "";
+    const extra = info.state === "yes" && info.extras.length;
     btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` + kindDot +
-      (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
+      (extra ? `<span class="q">+${info.extras.length}</span>`
+             : (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : ""));
     btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${STATE_WORDS[info.state] || info.state}`
       + (info.state === "yes" && info.kind && kindName(store, info.kind) ? `, ${kindName(store, info.kind)}` : "")
+      + (extra ? `, and ${info.extras.length} more ${info.extras.length === 1 ? "delivery" : "deliveries"}` : "")
       + (future ? " (planned)" : "")
       + (shut ? (lock.reason === "guard" ? " (protected)" : " (locked)") : "")
       + (pre ? " (before this book starts)" : ""));
@@ -1762,7 +1890,10 @@ function render(){  const tk = today();
 }
 
 const CYCLE = ["yes", "skip", "away"];
-function writeDay(key, state, qtyMl, kind){
+/* More than a few deliveries on one date is a different app; this is a milk
+   book, and the ceiling exists so a bad merge cannot grow one without end. */
+const MAX_EXTRA = 6;
+function writeDay(key, state, qtyMl, kind, extras){
   const e = { s: state, t: Date.now() };
   if(state === "yes" && qtyMl != null && qtyMl !== store.settings.qtyMl) e.q = qtyMl;
   /* The kind is kept whatever the state, and only ever billed on a day that was
@@ -1770,10 +1901,13 @@ function writeDay(key, state, qtyMl, kind){
      twice past it and back again quietly returned the day to the default price
      — a mis-tap that changes what someone is charged and says nothing. */
   if(kind) e.k = kind;
+  const more = (extras || []).filter(x => x && x.k).slice(0, MAX_EXTRA)
+    .map(x => (x.q != null && x.q !== store.settings.qtyMl) ? { k: x.k, q: x.q } : { k: x.k });
+  if(more.length) e.more = more;
   store.days[key] = e;
 }
-function setDay(key, state, qtyMl, kind){
-  writeDay(key, state, qtyMl, kind);
+function setDay(key, state, qtyMl, kind, extras){
+  writeDay(key, state, qtyMl, kind, extras);
   saveStore(store);
   queueSync();
 }
@@ -1947,13 +2081,15 @@ function cycle(key){
   const was = dayInfo(store, key);
   const custom = was.custom ? was.qtyMl : null;
   // A tap is about whether it came, not what it was. Whatever kind the day was
-  // already recorded as stays put; changing it is what the long press is for.
+  // already recorded as stays put, and so does anything else that came with it;
+  // changing those is what the long press is for.
   const kind = was.kind;
+  const extras = was.extras;
   const d = parseYmd(key);
   const label = STATE_WORDS[state] || state;
   const wasLabel = STATE_WORDS[cur] || cur;
   logChange(`${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}: ${wasLabel} \u2192 ${label}`);
-  withUndo([key], () => writeDay(key, state, custom, kind),
+  withUndo([key], () => writeDay(key, state, custom, kind, extras),
     `${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} \u2014 ${label}`);
 }
 
@@ -2013,6 +2149,12 @@ function settingsFormRaw(){
     $("fStart").value, $("fLock").value, $("fDefault").value, $("fFull").value,
     $("fGuard").value, $("fOpenFor").value,
     [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => c.dataset.d).join(","),
+    // Read from the rows being edited rather than the DOM: a kind is a name, a
+    // price and whether it has been removed, and all three live there. Left out
+    // of this list, typing a price and closing the sheet threw it away without
+    // a word — the very thing the rest of this comparison exists to prevent.
+    kindRows.map(k => `${k.id}:${k.name || ""}:${Number(k.rateMinor) || 0}:${k.v || ""}:${k.off ? 1 : 0}`).join("|"),
+    vendorRows.map(v => `${v.id}:${v.name || ""}:${v.off ? 1 : 0}`).join("|"),
   ]);
 }
 const settingsDirty = () =>
@@ -2114,8 +2256,57 @@ const newKindId = () => "k" + Math.random().toString(36).slice(2, 8) + Date.now(
    starts at the book's default and is yours to change. */
 const KIND_PRESETS = ["Cow", "Buffalo", "Toned", "Full cream"];
 
+/* Vendors being edited, held apart from the book until Save, same as the kinds. */
+let vendorRows = [];
+
+function renderVendorRows(){
+  const w = $("fVendors"); w.innerHTML = "";
+  for(const v of vendorRows){
+    if(v.off) continue;
+    const row = document.createElement("div");
+    row.className = "kindrow";
+    const name = document.createElement("input");
+    name.type = "text"; name.className = "kName"; name.maxLength = 60;
+    name.placeholder = "e.g. Suresh Dairy"; name.value = v.name || "";
+    name.setAttribute("aria-label", "Name of this vendor");
+    name.addEventListener("input", () => { v.name = name.value.slice(0, 60); });
+    name.addEventListener("change", renderKindRows);
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "kDel"; del.textContent = "\u2715";
+    del.setAttribute("aria-label", `Remove ${v.name || "this vendor"}`);
+    del.addEventListener("click", () => removeVendorRow(v));
+    row.appendChild(name); row.appendChild(del);
+    w.appendChild(row);
+  }
+  const offer = $("fVendorAdd"); offer.innerHTML = "";
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip add"; b.textContent = "+ Another vendor";
+  b.addEventListener("click", () => {
+    if(vendorRows.filter(x => !x.off).length >= MAX_VENDORS) return toast("That is as many vendors as a book can hold.");
+    vendorRows.push({ id: newKindId(), name: "", t: Date.now() });
+    renderVendorRows(); renderKindRows();
+    const inputs = $("fVendors").querySelectorAll(".kName");
+    if(inputs.length && inputs[inputs.length - 1].focus) inputs[inputs.length - 1].focus();
+  });
+  offer.appendChild(b);
+}
+
+function removeVendorRow(v){
+  const known = extraVendors(store).some(x => x.id === v.id);
+  const kinds = kindRows.filter(k => !k.off && k.v === v.id).length;
+  if(!known){ vendorRows = vendorRows.filter(x => x !== v); }
+  else { v.off = true; }
+  // A kind belongs to somebody. Left pointing at a vendor who is gone it would
+  // be billed to nobody, so it goes back to the book's original vendor.
+  for(const k of kindRows) if(k.v === v.id) k.v = "";
+  renderVendorRows(); renderKindRows();
+  if(kinds) toast(`Removed. ${kinds} kind${kinds === 1 ? "" : "s"} moved back to ${store.settings.vendor || "your first vendor"}.`);
+}
+
 function renderKindRows(){
   const w = $("fKinds"); w.innerHTML = "";
+  const vendors = [{ id: "", name: $("fVendor").value.trim() || "My vendor" },
+                   ...vendorRows.filter(v => !v.off)];
   for(const k of kindRows){
     if(k.off) continue;
     const row = document.createElement("div");
@@ -2126,6 +2317,21 @@ function renderKindRows(){
     name.setAttribute("aria-label", "Name of this kind of milk");
     name.addEventListener("input", () => { k.name = name.value.slice(0, 40); });
     name.addEventListener("change", renderKindOffer);
+    row.appendChild(name);
+    // Only worth asking who sells it once more than one person does.
+    if(vendors.length > 1){
+      const who = document.createElement("select");
+      who.className = "kVendor";
+      who.setAttribute("aria-label", `Which vendor sells ${k.name || "this kind"}`);
+      for(const v of vendors){
+        const o = document.createElement("option");
+        o.value = v.id; o.textContent = v.name || "Unnamed";
+        if(v.id === (k.v || "")) o.selected = true;
+        who.appendChild(o);
+      }
+      who.addEventListener("change", () => { k.v = who.value; });
+      row.appendChild(who);
+    }
     const rate = document.createElement("input");
     rate.type = "number"; rate.className = "kRate"; rate.step = "0.5"; rate.min = "0"; rate.max = "100000";
     rate.inputMode = "decimal"; rate.value = (Number(k.rateMinor) || 0) / 100;
@@ -2135,7 +2341,7 @@ function renderKindRows(){
     del.type = "button"; del.className = "kDel"; del.textContent = "\u2715";
     del.setAttribute("aria-label", `Remove ${k.name || "this kind"}`);
     del.addEventListener("click", () => removeKindRow(k));
-    row.appendChild(name); row.appendChild(rate); row.appendChild(del);
+    row.appendChild(rate); row.appendChild(del);
     w.appendChild(row);
   }
   renderKindOffer();
@@ -2180,7 +2386,9 @@ function removeKindRow(k){
 
 function openSettings(){
   const st = store.settings;
+  vendorRows = extraVendors(store).map(v => Object.assign({}, v));
   kindRows = kindsOf(store).map(k => Object.assign({}, k));
+  renderVendorRows();
   renderKindRows();
   $("fVendor").value = st.vendor || "";
   $("fQty").value = st.qtyMl / 1000;
@@ -2330,14 +2538,29 @@ $("saveSettings").addEventListener("click", () => {
     .map(k => {
       const was = before.get(k.id);
       const next = { id: k.id, name: (k.name || "").trim().slice(0, 40), rateMinor: Number(k.rateMinor) || 0 };
+      if(k.v) next.v = k.v;
       if(k.off) next.off = true;
       const same = was && was.name === next.name && Number(was.rateMinor) === next.rateMinor
-        && !!was.off === !!next.off;
+        && (was.v || "") === (next.v || "") && !!was.off === !!next.off;
       next.t = same ? (was.t || 0) : Date.now();
       return next;
     })
     .slice(0, MAX_KINDS);
   if(kinds.length || kindsOf(store).length) next.kinds = kinds;
+
+  const vBefore = new Map(extraVendors(store).map(v => [v.id, v]));
+  const vendors = vendorRows
+    .filter(v => v.id && ((v.name || "").trim() || vBefore.has(v.id)))
+    .map(v => {
+      const was = vBefore.get(v.id);
+      const out = { id: v.id, name: (v.name || "").trim().slice(0, 60) };
+      if(v.off) out.off = true;
+      const same = was && was.name === out.name && !!was.off === !!out.off;
+      out.t = same ? (was.t || 0) : Date.now();
+      return out;
+    })
+    .slice(0, MAX_VENDORS);
+  if(vendors.length || extraVendors(store).length) next.vendors = vendors;
 
   const was = store.settings;
   const rateChanged = Number(next.rateMinor) !== Number(was.rateMinor || 0);
@@ -3011,6 +3234,7 @@ function openDay(key){
   const info = dayInfo(store, key);
   editState = info.state === "off" ? "yes" : info.state;
   editKind = info.kind;
+  editExtras = info.extras.map(x => Object.assign({}, x));
   const d = parseYmd(key);
   $("dTitle").textContent = `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   const w = $("dStates"); w.innerHTML = "";
@@ -3028,6 +3252,7 @@ function openDay(key){
   }
   markDayState = () => [...w.children].forEach(x => x.classList.toggle("on", x.dataset.v === editState));
   renderDayKinds();
+  renderDayMore();
   $("dQty").value = (info.state === "yes" ? info.qtyMl : store.settings.qtyMl) / 1000;
   showDayFields();
   sheet("shDay");
@@ -3043,7 +3268,53 @@ function showDayFields(){
   const relevant = yes || editState === "none" || editState === "off";
   const any = liveKinds(store).length > 0 || editKind;
   $("dKindWrap").style.display = relevant && any ? "" : "none";
+  // A second delivery only makes sense once there is something else it could
+  // be, so this stays hidden until the book has a kind to choose.
+  $("dMoreWrap").style.display = yes && liveKinds(store).length > 0 ? "" : "none";
 }
+
+function renderDayMore(){
+  const w = $("dMore"); w.innerHTML = "";
+  const options = [{ id: "", name: "Default" }, ...liveKinds(store)];
+  editExtras.forEach((x, i) => {
+    const row = document.createElement("div");
+    row.className = "morerow";
+    const who = document.createElement("select");
+    who.setAttribute("aria-label", "Which milk this delivery was");
+    for(const k of options){
+      const o = document.createElement("option");
+      o.value = k.id;
+      o.textContent = manyVendors(store) && k.id
+        ? `${k.name || "Unnamed"} \u2014 ${vendorName(store, k.v || "")}`
+        : (k.name || "Unnamed");
+      if(k.id === (x.k || "")) o.selected = true;
+      who.appendChild(o);
+    }
+    who.addEventListener("change", () => { x.k = who.value; });
+    const qty = document.createElement("input");
+    qty.type = "number"; qty.step = "0.25"; qty.min = "0"; qty.max = "100"; qty.inputMode = "decimal";
+    qty.setAttribute("aria-label", "Litres in this delivery");
+    qty.value = (x.q != null ? x.q : store.settings.qtyMl) / 1000;
+    qty.addEventListener("input", () => { x.q = clampQty(parseFloat(qty.value || "0") * 1000); });
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "kDel"; del.textContent = "\u2715";
+    del.setAttribute("aria-label", "Remove this delivery");
+    del.addEventListener("click", () => { editExtras.splice(i, 1); renderDayMore(); });
+    row.appendChild(who); row.appendChild(qty); row.appendChild(del);
+    w.appendChild(row);
+  });
+  $("dAddMore").disabled = editExtras.length >= MAX_EXTRA;
+}
+
+$("dAddMore").addEventListener("click", () => {
+  if(editExtras.length >= MAX_EXTRA) return;
+  const first = liveKinds(store)[0];
+  editExtras.push({ k: first ? first.id : "", q: store.settings.qtyMl });
+  // Adding a second delivery is saying the day had one, same as naming a kind.
+  if(editState !== "yes"){ editState = "yes"; markDayState(); }
+  showDayFields();
+  renderDayMore();
+});
 
 /* Set by openDay so the kind chips can move the status with them. */
 let markDayState = () => {};
@@ -3062,7 +3333,11 @@ function renderDayKinds(){
   for(const k of options){
     const c = document.createElement("button");
     c.className = "chip" + (k.id === editKind ? " on" : "");
-    c.textContent = k.name || "Unnamed";
+    // With two vendors selling the same milk, the name alone is two identical
+    // chips and no way to tell which is which.
+    c.textContent = manyVendors(store) && k.id
+      ? `${k.name || "Unnamed"} \u2014 ${vendorName(store, k.v || "")}`
+      : (k.name || "Unnamed");
     c.addEventListener("click", () => {
       editKind = k.id;
       // Naming the milk is saying it came. Without this, choosing a kind on a
@@ -3091,12 +3366,14 @@ $("dSave").addEventListener("click", () => {
   const q = clampQty(parseFloat($("dQty").value || "0") * 1000);
   const state = editState;
   const kind = editKind;
+  const extras = state === "yes" ? editExtras.filter(x => x && x.k) : [];
   const d = parseYmd(editKey);
   logChange(`${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}: set to ${STATE_WORDS[state] || state}`
     + (state === "yes" ? ` at ${fmtL(q)} L` : "")
-    + (state === "yes" && kind ? ` (${kindName(store, kind)})` : ""));
+    + (state === "yes" && kind ? ` (${kindName(store, kind)})` : "")
+    + (extras.length ? ` +${extras.length} more` : ""));
   sheet(null);
-  withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null, kind), "Updated");
+  withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null, kind, extras), "Updated");
 });
 
 /* away range */
