@@ -612,6 +612,20 @@
   <h2>Backups and history</h2>
   <p class="lede">Your records live on your phones and nowhere else. A copy kept somewhere else is
     the one thing that survives a phone being lost, wiped or replaced.</p>
+  <div class="field" id="driveBox" hidden>
+    <label>Your book in Google Drive</label>
+    <button class="btn sec" id="btnDrive" type="button">Sync through Google Drive</button>
+    <p class="hint" id="driveWho" hidden></p>
+    <p class="hint" id="driveTrouble" hidden></p>
+    <button class="btn ghost" id="btnDriveRetry" type="button" hidden style="margin-top:6px">Reconnect to Drive</button>
+    <button class="btn ghost" id="btnDriveSwitch" type="button" hidden style="margin-top:6px">Use a different Google account</button>
+    <button class="btn ghost" id="btnDriveOff" type="button" hidden style="margin-top:6px">Stop using Google Drive</button>
+    <p class="hint">One file in your own Drive, read when you open the app and written when you change
+      something, so every phone signed into this account shows the same book and a new one only has to
+      sign in. This app can only touch the file it made — nothing else in your Drive — and never sees
+      your password. Nothing here waits on Drive: if it cannot be reached, the book carries on from this
+      phone and goes up the next time it can.</p>
+  </div>
   <div class="field">
     <label for="fEvery">Keep a copy off this phone</label>
     <select id="fEvery">
@@ -621,15 +635,6 @@
       <option value="month">Once a month</option>
       <option value="off">Never — I will do it myself</option>
     </select>
-    <div id="driveBox" hidden>
-      <button class="btn sec" id="btnDrive" type="button" style="margin-top:8px">Save to Google Drive</button>
-      <p class="hint" id="driveWho" hidden></p>
-      <button class="btn ghost" id="btnDriveSwitch" type="button" hidden style="margin-top:6px">Use a different Google account</button>
-      <button class="btn ghost" id="btnDriveOff" type="button" hidden style="margin-top:6px">Stop using Google Drive</button>
-      <p class="hint">Keeps one file in your own Drive and reads it back when you open the app, so a new
-        phone only has to sign in. This app can only touch the file it made — nothing else in your Drive
-        — and never sees your password.</p>
-    </div>
     <div id="fileBox" hidden>
       <button class="btn sec" id="btnPick" type="button" style="margin-top:8px">Choose a file to keep up to date</button>
       <button class="btn ghost" id="btnUnpick" type="button" hidden style="margin-top:6px">Stop using that file</button>
@@ -2230,6 +2235,9 @@ const settingsDirty = () =>
 
 /** Close the sheet in front of you, unless it is holding something unsaved. */
 function closeSheet(){
+  // Backing out of a question is answering no. Dropping it instead meant the
+  // scrim could dismiss "Save your changes?" and take the changes with it.
+  if(openSheet === "shConfirm") return $("cfNo").click();
   if(!settingsDirty()) return sheet(null);
   ask("Save your changes?",
     "You have changed settings without saving. Leaving now keeps the old ones and "
@@ -2958,12 +2966,19 @@ async function writeToBackupFile(){
 let backupTimer = null;
 /** Called after every write to the book; the schedule decides whether it acts. */
 function maybeAutoBackup(){
+  /* Drive is not on the schedule any more. It is where the phones meet, so a
+     change belongs there as soon as it is made — the schedule governs the file
+     picker and the reminder to send a copy by hand. Not while a merge is being
+     written down, or every sync would schedule the next one. */
+  if(driveOn() && !applyingRemote){
+    clearTimeout(driveTimer);
+    driveTimer = setTimeout(() => driveNudge(true), 2500);
+  }
   if(!backupDue()) return;
-  if(!fileHandle && !driveOn()) return;
+  if(!fileHandle) return;
   clearTimeout(backupTimer);
   backupTimer = setTimeout(() => {
-    if(fileHandle) writeToBackupFile().catch(() => { fileBlocked = true; });
-    if(driveOn()) driveUpload().catch(() => {});
+    writeToBackupFile().catch(() => { fileBlocked = true; });
   }, 1500);
 }
 
@@ -2986,9 +3001,9 @@ function renderBackupNote(){
   }
   const drive = $("driveBox");
   if(drive){
-    drive.hidden = !CAN_USE_DRIVE || backupEvery() === "off";
+    drive.hidden = !CAN_USE_DRIVE;
     const on = driveOn(), who = driveWho();
-    if($("btnDrive")) $("btnDrive").textContent = on ? "Send to Drive now" : "Save to Google Drive";
+    if($("btnDrive")) $("btnDrive").textContent = on ? "Send to Drive now" : "Sync through Google Drive";
     if($("btnDriveOff")) $("btnDriveOff").hidden = !on;
     // Switching accounts is only meaningful once there is an account, and it is
     // only obvious which one you would be leaving if the app says whose it is.
@@ -3000,6 +3015,13 @@ function renderBackupNote(){
         ? `Using the Drive of <b>${esc(who)}</b>.`
         : "Signed in to Google.";
     }
+    /* A sync that stopped happening has to say so. The mirror once went quiet
+       for weeks and looked like it was working; the whole point of the book
+       being safe on this phone is lost if nobody is told it is only there. */
+    const trouble = $("driveTrouble"), retry = $("btnDriveRetry");
+    const why = !on ? "" : DRIVE_TROUBLE[driveState] || (drivePending() ? DRIVE_TROUBLE.waiting : "");
+    if(trouble){ trouble.hidden = !why; trouble.textContent = why; }
+    if(retry) retry.hidden = !(on && (driveState === "signed-out" || driveState === "error"));
   }
   let at = 0;
   try{ at = Number(localStorage.getItem(BACKUP_AT_KEY)) || 0; }catch(e){}
@@ -3008,9 +3030,10 @@ function renderBackupNote(){
     : ago === 1 ? "Last copy saved yesterday." : `Last copy saved ${ago} days ago.`;
   const sub = $("safeSub");
   if(sub) sub.textContent =
-    fileHandle && fileBlocked ? `${fileHandle.name} is no longer being written to`
-    : driveOn() && fileHandle ? `Kept in Google Drive and ${fileHandle.name}`
-    : driveOn() ? (driveWho() ? `Kept in the Drive of ${driveWho()}` : "Kept in your Google Drive")
+    driveOn() && DRIVE_SHORT[driveState] ? DRIVE_SHORT[driveState]
+    : driveOn() && drivePending() ? DRIVE_SHORT.waiting
+    : driveOn() ? (driveWho() ? `In the Drive of ${driveWho()}` : "Kept in your Google Drive")
+    : fileHandle && fileBlocked ? `${fileHandle.name} is no longer being written to`
     : fileHandle ? `Kept up to date in ${fileHandle.name}`
     : !Object.keys(store.days || {}).length ? "Keep a copy that outlives this phone"
     : at ? when.replace(/\.$/, "") + (backupDue() ? " — a fresh one is due" : "")
@@ -3018,17 +3041,17 @@ function renderBackupNote(){
   const el = $("backupNote");
   if(!el) return;
   if(!Object.keys(store.days || {}).length){ el.textContent = ""; return; }
+  // Drive speaks for itself just above; this line is about the copy you keep
+  // by hand or in a picked file, so it must not claim credit for Drive's work.
   if(fileHandle && fileBlocked){
     el.innerHTML = `<b>${esc(fileHandle.name)} is no longer being written to.</b> The browser needs `
       + `permission again before this book can keep itself copied there. ${esc(when)}`;
-  }else if(fileHandle && driveOn()){
-    el.textContent = `Kept in ${fileHandle.name} and in your Drive, ${EVERY_WORD[backupEvery()] || ""}. ${when}`;
-  }else if(driveOn()){
-    el.textContent = `Kept in your Drive as ${DRIVE_NAME}, ${EVERY_WORD[backupEvery()] || ""}. ${when}`;
   }else if(fileHandle){
     el.textContent = `Kept up to date in ${fileHandle.name}, ${EVERY_WORD[backupEvery()] || ""}. ${when}`;
   }else if(at){
     el.textContent = when + (backupDue() ? " A fresh one is due." : "");
+  }else if(driveOn()){
+    el.textContent = "";
   }else{
     el.innerHTML = "<b>No copy has been kept yet.</b> If this phone were lost today, everything on it "
       + "would go with it.";
@@ -3071,6 +3094,24 @@ let driveToken = null, driveTokenAt = 0, driveClient = null, driveBusy = false;
 const driveOn = () => { try{ return localStorage.getItem(DRIVE_ON_KEY) === "1"; }catch(e){ return false; } };
 const driveFileId = () => { try{ return localStorage.getItem(DRIVE_ID_KEY) || ""; }catch(e){ return ""; } };
 const driveWho = () => { try{ return localStorage.getItem(DRIVE_WHO_KEY) || ""; }catch(e){ return ""; } };
+
+/* Every one of these means the same thing underneath: the book on this phone is
+   whole, and Drive is behind. Saying which is which is the difference between
+   somebody reconnecting and somebody assuming it works. */
+const DRIVE_TROUBLE = {
+  "signed-out": "This phone is signed out of Google, so nothing has gone up since. Everything is still here.",
+  offline: "No connection, so Drive has not been reached. Everything is still here and goes up when it can.",
+  unreadable: `There is a file called ${DRIVE_NAME} in that Drive this app cannot read, so nothing has been written over it.`,
+  error: "Drive could not be reached last time. Everything is still here and goes up when it can.",
+  waiting: "Changes on this phone have not reached Drive yet.",
+};
+const DRIVE_SHORT = {
+  "signed-out": "Signed out of Drive — tap to reconnect",
+  offline: "Offline — Drive is waiting",
+  unreadable: "The file in Drive could not be read",
+  error: "Drive could not be reached",
+  waiting: "Changes not in Drive yet",
+};
 
 function loadGoogle(){
   if(window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
@@ -3119,38 +3160,94 @@ async function findDriveFile(){
   return (body.files && body.files[0] && body.files[0].id) || "";
 }
 
-async function driveUpload(force){
-  const body = bookPayload(), mark = markOf(body);
-  // Re-uploading a book nobody has touched costs a round trip, a write to
-  // somebody's Drive and a version in their file history, for no change at all.
-  if(!force && mark === lastSent("drive")){ markBackedUp(); return; }
+/* A phone with a wrong clock decides every disagreement in its own favour,
+   because the merge keeps whichever edit claims the later moment. The mirror
+   clamps that server-side. Drive has no server of ours, but the file's own
+   modifiedTime comes from Google's clock, and nothing written inside a file can
+   honestly be newer than the moment the file was written. */
+const DRIVE_SKEW_GRACE = 5 * 60 * 1000;
+function settleClock(book, writtenAt){
+  if(!book || !writtenAt || !isFinite(writtenAt)) return book;
+  const ceiling = writtenAt + DRIVE_SKEW_GRACE;
+  const cap = t => (typeof t === "number" && t > ceiling ? ceiling : t);
+  for(const field of ["days", "locks", "payments", "rates", "roster"]){
+    for(const rec of Object.values(book[field] || {})){
+      if(rec && typeof rec === "object") rec.t = cap(rec.t);
+    }
+  }
+  for(const item of book.log || []) if(item && typeof item === "object") item.t = cap(item.t);
+  const s = book.settings;
+  if(s && typeof s === "object"){
+    s.t = cap(s.t);
+    for(const key of Object.keys(s.at || {})) s.at[key] = cap(s.at[key]);
+    for(const field of ["kinds", "vendors"]){
+      for(const k of s[field] || []) if(k && typeof k === "object") k.t = cap(k.t);
+    }
+  }
+  return book;
+}
+
+/* Two phones write the same days in whatever order they happen to have them, so
+   the plain text of two identical books differs and every sync looked like a
+   change worth uploading. */
+function canonical(value){
+  if(Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+  if(value && typeof value === "object"){
+    return "{" + Object.keys(value).sort()
+      .map(k => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}";
+  }
+  return JSON.stringify(value === undefined ? null : value);
+}
+const bookMark = book => markOf(canonical({
+  settings: book.settings, days: book.days, locks: book.locks,
+  payments: book.payments, rates: book.rates, log: book.log || [], roster: book.roster || {},
+}));
+
+/** What Drive holds, with its timestamps held to Google's clock. */
+async function driveRead(){
+  const id = driveFileId() || await findDriveFile();
+  if(!id) return null;
+  let writtenAt = NaN;
+  const meta = await driveCall(`https://www.googleapis.com/drive/v3/files/${id}?fields=modifiedTime`);
+  if(meta.ok){
+    const body = await meta.json();
+    writtenAt = Date.parse((body && body.modifiedTime) || "");
+  }
+  const r = await driveCall(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`);
+  if(!r.ok) throw new Error("read " + r.status);
+  const book = bookFromCopy(await r.text());
+  // An unreadable file is not an empty one. Treating it as empty would upload
+  // this phone's book straight over whatever is actually in there.
+  if(!book) throw new Error("unreadable");
+  return { book: settleClock(book, writtenAt), id };
+}
+
+async function driveWrite(){
   let id = driveFileId() || await findDriveFile();
   const text = backupText();
   let r;
   if(id){
     r = await driveCall(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`,
       { method: "PATCH", headers: { "Content-Type": "application/json" }, body: text });
-  }else{
+    // The file was deleted or emptied out of the trash while this phone slept.
+    if(r.status === 404){
+      try{ localStorage.removeItem(DRIVE_ID_KEY); }catch(e){}
+      id = "";
+    }
+  }
+  if(!id){
     const boundary = "milkbook" + Math.random().toString(36).slice(2);
-    const body2 = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`
+    const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`
       + JSON.stringify({ name: DRIVE_NAME, mimeType: "application/json" })
       + `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${text}\r\n--${boundary}--`;
     r = await driveCall("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-      { method: "POST", headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body: body2 });
+      { method: "POST", headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body });
   }
   if(!r.ok) throw new Error("upload " + r.status);
   const saved = await r.json();
   if(saved && saved.id){ try{ localStorage.setItem(DRIVE_ID_KEY, saved.id); }catch(e){} }
-  rememberSent("drive", mark);
+  rememberSent("drive", bookMark(store));
   markBackedUp();
-}
-
-async function driveDownload(){
-  const id = driveFileId() || await findDriveFile();
-  if(!id) return null;
-  const r = await driveCall(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`);
-  if(!r.ok) return null;
-  return bookFromCopy(await r.text());
 }
 
 /** Whose Drive this is. Read from Drive itself rather than asking for a second
@@ -3165,38 +3262,135 @@ async function noteDriveAccount(){
   }catch(e){}
 }
 
-/** Read what Drive holds, fold it in, then write the result back. */
+/* What the app is able to say about Drive right now. Every one of these except
+   "ok" leaves the book on this phone exactly as it was: a sync that did not
+   happen must never be the reason a day goes missing. */
+let driveState = "", driveAt = 0, driveTimer = null, applyingRemote = false;
+const drivePending = () => driveOn() && lastSent("drive") !== bookMark(store);
+
+/**
+ * Read Drive, fold it into this phone, write the result back.
+ *
+ * Read-merge-write rather than write: two phones editing the same day are
+ * settled by the later edit, and a phone whose upload was overwritten still
+ * holds its own copy and puts it back the next time it syncs.
+ */
 async function driveSync(mayAsk, chooseAccount){
   if(driveBusy) return;
+  if(typeof navigator !== "undefined" && navigator.onLine === false){
+    driveState = "offline"; renderBackupNote();
+    return;
+  }
   driveBusy = true;
   try{
-    await driveAuth(mayAsk, chooseAccount);
-    const theirs = await driveDownload();
+    try{
+      await driveAuth(mayAsk, chooseAccount);
+    }catch(e){
+      // Silent renewal fails when the Google session has lapsed, or where the
+      // browser refuses third-party cookies. Neither is worth a popup nobody
+      // asked for, so the app says so and carries on from this phone.
+      driveState = "signed-out";
+      throw e;
+    }
+    let theirs = null, remoteMark = "";
+    try{
+      const read = await driveRead();
+      if(read){ theirs = read.book; remoteMark = bookMark(theirs); }
+    }catch(e){
+      driveState = String(e && e.message) === "unreadable" ? "unreadable" : "error";
+      throw e;
+    }
     if(theirs){
       const before = Object.keys(store.days).length;
       const merged = mergeStores(store, theirs);
-      store.days = merged.days; store.locks = merged.locks;
-      store.payments = merged.payments; store.rates = merged.rates;
-      store.log = merged.log; store.settings = merged.settings;
-      const after = Object.keys(store.days).length;
-      if(after !== before) logChange(`Took ${after - before} day${after - before === 1 ? "" : "s"} back from Drive`);
-      saveStore(store); render();
+      applyingRemote = true;
+      try{
+        store.days = merged.days; store.locks = merged.locks;
+        store.payments = merged.payments; store.rates = merged.rates;
+        store.log = merged.log; store.settings = merged.settings;
+        store.roster = merged.roster || store.roster;
+        const after = Object.keys(store.days).length;
+        if(after !== before) logChange(`Took ${after - before} day${after - before === 1 ? "" : "s"} back from Drive`);
+        saveStore(store); render(); renderSync();
+      }finally{
+        applyingRemote = false;
+      }
     }
-    await driveUpload(mayAsk);
-    if(mayAsk) await noteDriveAccount();
+    /* Uploading is decided against what is actually in Drive, not against what
+       this phone last sent. Another phone can have written over it since, and
+       trusting our own receipt would leave that gap there for good. */
+    if(bookMark(store) !== remoteMark) await driveWrite();
+    else { rememberSent("drive", remoteMark); markBackedUp(); }
+    if(!driveWho()) await noteDriveAccount();
+    driveState = "ok"; driveAt = Date.now();
+    renderBackupNote();
+  }catch(e){
+    if(driveState === "ok" || !driveState) driveState = "error";
+    renderBackupNote();
+    throw e;
   }finally{
     driveBusy = false;
   }
 }
 
+/* Every open, not on a schedule, because Drive is now where the phones meet
+   rather than somewhere a copy is filed once a week. Silent: prompt "none"
+   renews a token without a window, and if it cannot, the app says it is signed
+   out instead of throwing a Google popup at somebody opening the app to mark
+   one day. */
+const DRIVE_MIN_GAP = 15000;
+function driveNudge(force){
+  if(!driveOn()) return;
+  // A change made while a sync is already running waits for the next one rather
+  // than being dropped, or it would sit on this phone until somebody reopened.
+  if(driveBusy){
+    clearTimeout(driveTimer);
+    driveTimer = setTimeout(() => driveNudge(force), 3000);
+    return;
+  }
+  if(!force && Date.now() - driveAt < DRIVE_MIN_GAP) return;
+  driveSync(false).catch(() => {});
+}
+
+/** Connecting to an account, whether for the first time or a different one. */
+async function joinDrive(chooseAccount){
+  await driveAuth(true, chooseAccount);
+  let read = null;
+  try{ read = await driveRead(); }catch(e){
+    if(String(e && e.message) === "unreadable"){
+      driveState = "unreadable";
+      throw new Error("There is a file called " + DRIVE_NAME + " in that Drive that this app cannot read");
+    }
+    throw e;
+  }
+  const mine = Object.keys(store.days || {}).length;
+  const yonder = read ? Object.keys(read.book.days || {}).length : 0;
+  // A Drive with a book already in it, met by a phone with a book already in
+  // it, is either the household's other phone or another book entirely. Only a
+  // person can tell, so only a person decides.
+  if(mine && yonder){
+    const s = read.book.settings || {};
+    await new Promise((res, rej) => ask("That Drive already holds a book",
+      `It has ${yonder} recorded day${yonder === 1 ? "" : "s"}`
+      + `${s.vendor ? ` and names ${s.vendor} as the vendor` : ""}`
+      + `${s.startDate ? `, starting ${s.startDate}` : ""}. This phone has ${mine}. `
+      + `Merging keeps both, and where both have the same day the later one stands.`,
+      "Merge them", res, false, null, () => rej(new Error("declined"))));
+  }
+  await driveSync(true, false);
+  try{ localStorage.setItem(DRIVE_ON_KEY, "1"); }catch(e){}
+  if(!driveWho()) await noteDriveAccount();
+  renderBackupNote();
+}
+
 async function connectDrive(){
   try{
-    await driveSync(true);
-    try{ localStorage.setItem(DRIVE_ON_KEY, "1"); }catch(e){}
-    renderBackupNote();
-    toast(`Saved to your Drive as ${DRIVE_NAME}`);
+    await joinDrive(false);
+    toast(driveWho() ? `This book now syncs through the Drive of ${driveWho()}`
+                     : `Saved to your Drive as ${DRIVE_NAME}`);
   }catch(e){
-    toast("Google Drive could not be connected");
+    if(String(e && e.message) === "declined") return toast("Drive was left alone");
+    toast(e && e.message && e.message.length < 90 ? e.message : "Google Drive could not be connected");
   }
 }
 
@@ -3212,17 +3406,15 @@ async function switchDriveAccount(){
   }
   renderBackupNote();
   try{
-    await driveSync(true, true);
-    try{ localStorage.setItem(DRIVE_ON_KEY, "1"); }catch(e){}
-    renderBackupNote();
+    await joinDrive(true);
     const now = driveWho();
-    toast(now ? `Now saving to the Drive of ${now}` : "Now saving to the other Google account");
+    toast(now ? `Now syncing through the Drive of ${now}` : "Now using the other Google account");
   }catch(e){
     // Backing out of the chooser must not leave the app half-signed-out of an
     // account that was working a moment ago.
     if(was) try{ localStorage.setItem(DRIVE_WHO_KEY, was); }catch(e2){}
     renderBackupNote();
-    toast("The account was not changed");
+    toast(String(e && e.message) === "declined" ? "The account was not changed" : "That account could not be used");
   }
 }
 
@@ -3230,7 +3422,7 @@ function disconnectDrive(){
   try{
     for(const key of [DRIVE_ON_KEY, DRIVE_ID_KEY, DRIVE_WHO_KEY, MARK_KEY("drive")]) localStorage.removeItem(key);
   }catch(e){}
-  driveToken = null; driveTokenAt = 0;
+  driveToken = null; driveTokenAt = 0; driveState = "";
   renderBackupNote();
   toast("Drive will not be written to again. The file already there is left alone.");
 }
@@ -3323,6 +3515,11 @@ $("btnUnpick").addEventListener("click", () => {
   toast("That file will not be written to again");
 });
 $("btnDrive").addEventListener("click", connectDrive);
+$("btnDriveRetry").addEventListener("click", () => {
+  // A tap is the one moment a Google window is allowed, so this is the way back
+  // in when the silent renewal on every open has stopped working.
+  driveSync(true).then(() => toast("Drive is up to date")).catch(() => toast("Drive still could not be reached"));
+});
 $("btnDriveSwitch").addEventListener("click", switchDriveAccount);
 $("btnDriveOff").addEventListener("click", disconnectDrive);
 $("btnImport").addEventListener("click", () => $("fileImport").click());
@@ -3353,7 +3550,8 @@ $("fullOff").addEventListener("click", () => {
 });
 $("btnReset").addEventListener("click", () => {  ask("Erase everything?",
     "Every day you have recorded on this device will be deleted, along with the earlier versions "
-    + "kept here. This cannot be undone, and if you are syncing, the other phones still hold their copy.",
+    + "kept here. This cannot be undone, and if you are syncing, the other phones still hold their copy. "
+    + "This phone also stops using Drive, so what is there is left alone and does not come back.",
     "Erase all data",
     () => {
       // Erase has to mean erase. Leaving the kept copies behind would hand the
@@ -3361,6 +3559,8 @@ $("btnReset").addEventListener("click", () => {  ask("Erase everything?",
       for(const key of [SNAP_KEY, SNAP_DAY_KEY, STASH_KEY]){
         try{ localStorage.removeItem(key); }catch(e){}
       }
+      // And leaving Drive connected would have the next open read it all back.
+      if(driveOn()) disconnectDrive();
       store = freshStore(); saveStore(store);
       render(); renderSync(); renderRestore(); toast("Erased");
     },
@@ -4255,15 +4455,22 @@ $("btnLock").addEventListener("click", () => {
   }
   if(IS_LOCAL_COPY) markLocalCopy();
   loadBackupFile();
-  /* Drive on a schedule, not on every open. Asking Google for a token needs a
-     popup, so touching Drive every time the app started meant a sign-in window
-     every time somebody opened it to mark one day. A book that has never been
-     read back is the exception: that is the new phone this exists for. */
-  if(driveOn() && (backupDue() || !Object.keys(store.days).length))
-    driveSync(false).catch(() => {});
+  /* Every open, because Drive is where the phones meet rather than a filing
+     cabinet. Silent: it renews the token without a window, and where it cannot
+     — a lapsed Google session, a browser refusing third-party cookies — the app
+     says it is signed out rather than throwing a popup at somebody who opened
+     it to mark one day. Nothing on this phone is touched either way. */
+  driveNudge(true);
   if("serviceWorker" in navigator && !IS_LOCAL_COPY)
     navigator.serviceWorker.register("sw.js").catch(() => {});
-  document.addEventListener("visibilitychange", () => { if(!document.hidden && store.sync) doSync(true); });
+  document.addEventListener("visibilitychange", () => {
+    if(document.hidden) return;
+    if(store.sync) doSync(true);
+    driveNudge(false);
+  });
+  // Whatever could not be sent while the connection was gone goes now.
+  addEventListener("online", () => { if(store.sync) doSync(true); driveNudge(true); });
+  addEventListener("offline", () => { if(driveOn()){ driveState = "offline"; renderBackupNote(); } });
 })();
 </script>
 <script data-count="milkbook">
