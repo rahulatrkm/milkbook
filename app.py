@@ -171,6 +171,9 @@ ENVELOPE = {"device", "approve", "revoke", "restore"}
 NEVER_STORE = KNOWN_TOP | ENVELOPE
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 DEVICE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
+# A key's fingerprint travels with the group so it can be put back; the key
+# itself never leaves this process.
+KEY_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_DEVICES = 50
 KIND_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
 MAX_KINDS = 24
@@ -516,8 +519,14 @@ def adopt_roster(raw, device_id: str) -> dict:
 
     Only a phone that was itself in the group, and approved, may put it back —
     which is no more trust than was already given to whoever synced first.
-    Keys are not restored, because a phone has never been allowed to see them;
-    each device binds its own again on its next visit.
+
+    What each entry brings back with it is the fingerprint of that device's
+    secret, never the secret. A returning phone still has to present the key
+    that matches, so somebody holding only the sync code cannot claim a slot:
+    device ids are readable by anyone who can read the book, and without this an
+    id was all it took. An entry that arrives with no fingerprint — remembered
+    by a phone from before this carried them — comes back named but waiting, so
+    a person confirms it rather than the mirror guessing.
     """
     if not isinstance(raw, dict):
         return {}
@@ -528,10 +537,16 @@ def adopt_roster(raw, device_id: str) -> dict:
     for did, entry in list(raw.items())[:MAX_DEVICES]:
         if not isinstance(did, str) or not DEVICE_ID_RE.match(did) or not isinstance(entry, dict):
             continue
+        digest = entry.get("h")
+        proven = isinstance(digest, str) and KEY_DIGEST_RE.match(digest)
         out[did] = {"n": str(entry.get("n") or "A phone")[:40],
-                    "ok": bool(entry.get("ok")),
+                    # The phone doing the restoring proves its own key on this
+                    # very request, so it needs no fingerprint to be believed.
+                    "ok": bool(entry.get("ok")) and (proven or did == device_id),
                     "t": int(entry.get("t") or 0) if isinstance(entry.get("t"), (int, float)) else 0,
                     "by": None}
+        if proven:
+            out[did]["h"] = digest
     return out if any(v["ok"] for v in out.values()) else {}
 
 
@@ -561,24 +576,30 @@ def apply_roster_changes(book: dict, actor: str, approve, revoke) -> dict:
     return book
 
 
-def public_roster(book: dict) -> dict:
-    """What a phone is allowed to see: who is on the book, never their secrets."""
+def public_roster(book: dict, keys_for: str = "") -> dict:
+    """Who is on the book. Never the secrets — only their fingerprints, and only
+    to a phone already approved, which is the one that may have to put the group
+    back after this mirror forgets it."""
+    roster = book.get("roster") or {}
+    trusted = bool(roster.get(keys_for, {}).get("ok")) if keys_for else False
     out = {}
-    for device_id, entry in (book.get("roster") or {}).items():
+    for device_id, entry in roster.items():
         out[device_id] = {"n": entry.get("n") or "A phone", "ok": bool(entry.get("ok")),
                           "t": int(entry.get("t") or 0), "label": device_label(device_id)}
+        if trusted and entry.get("h"):
+            out[device_id]["h"] = entry["h"]
     return out
 
 
-def _seen(book: dict) -> dict:
-    """The book as a phone may see it: the roster without the hashed secrets.
+def _seen(book: dict, keys_for: str = "") -> dict:
+    """The book as a phone may see it: the roster without the device secrets.
 
     Every reply goes through here, so a device secret cannot leave the server by
     being forgotten on one path.
     """
     out = {k: v for k, v in book.items() if k != "roster"}
     if book.get("roster"):
-        out["roster"] = public_roster(book)
+        out["roster"] = public_roster(book, keys_for)
     return out
 
 
@@ -1056,7 +1077,7 @@ def app(environ, start_response):
                 stored = apply_roster_changes(stored, device_id,
                                               raw.get("approve"), raw.get("revoke"))
                 merged = merge(stored, incoming)
-                return merged, dict(_seen(merged), you=standing)
+                return merged, dict(_seen(merged, device_id), you=standing)
 
             return _json(start_response, HTTPStatus.OK, update_book(code, change), cors)
 

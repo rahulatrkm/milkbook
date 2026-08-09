@@ -950,23 +950,25 @@ ok("the second arrives waiting", not _ok and _why == "pending")
 _book = M.apply_roster_changes(_book, _dev_a["id"], [_dev_b["id"]], [])
 ok("and is let in by the first", _book["roster"][_dev_b["id"]]["ok"] is True)
 
-# What a phone remembers is the public roster: names and standing, never keys.
-_remembered = M.public_roster(_book)
+# What a phone remembers is what an approved phone is given: names, standing and
+# the fingerprint of each device's secret — never the secret.
+_remembered = M.public_roster(_book, _dev_a["id"])
 ok("what a phone remembers carries no secrets",
-   all("h" not in v for v in _remembered.values()), json.dumps(_remembered))
+   all(v.get("h") not in (_KEY_A, _KEY_B) for v in _remembered.values()), json.dumps(_remembered))
 
 _wiped: dict = {}
 _back = M.adopt_roster(_remembered, _dev_b["id"])
 ok("a phone that was in the group can put it back", set(_back) == {_dev_a["id"], _dev_b["id"]},
    json.dumps(sorted(_back)))
 ok("and everybody keeps the standing they had", _back[_dev_a["id"]]["ok"] and _back[_dev_b["id"]]["ok"])
-ok("the restored entries carry no key, because none was ever handed out",
-   all(not v.get("h") for v in _back.values()))
+ok("the fingerprints come back so a returning phone still has to prove itself",
+   all(v.get("h") for v in _back.values()))
 
 _wiped["roster"] = _back
 _wiped, _ok, _why = M.enrol(_wiped, _dev_b)
 ok("that phone is straight back in, not waiting", _ok and _why == "in")
-ok("and its key binds on the way", _wiped["roster"][_dev_b["id"]]["h"] == M._hash_key(_KEY_B))
+ok("its key still matches the fingerprint that came back",
+   _wiped["roster"][_dev_b["id"]]["h"] == M._hash_key(_KEY_B))
 _wiped, _ok, _why = M.enrol(_wiped, _dev_a)
 ok("and so is the other one, without anybody approving anything again", _ok and _why == "in")
 ok("once bound, the wrong key is still refused",
@@ -982,6 +984,65 @@ ok("junk is not adopted", M.adopt_roster("roster", _dev_a["id"]) == {}
    and M.adopt_roster(None, _dev_a["id"]) == {})
 ok("a bad device id in a restored roster is dropped",
    "../x" not in M.adopt_roster({**_remembered, "../x": {"n": "x", "ok": True, "t": 1}}, _dev_b["id"]))
+
+print("\nPUTTING THE GROUP BACK MUST NOT LET A STRANGER IN")
+# The first cut of the restore did. Device ids are readable by anyone holding
+# the code — they are roster keys, and they are on every change-log entry — and
+# restored entries carried no key, so whoever claimed an id first got it. A
+# code holder could walk into a household's book that way, which before the
+# restore existed they could not: they would have sat pending.
+#
+# What travels now is the fingerprint of each device's secret, never the secret,
+# and only to a phone already approved. Inverting SHA-256 of a 48-character
+# random key is not a thing, so the fingerprint is safe to hold; presenting it
+# is not enough, only the key that matches it is.
+_m = {"id": "mumphoneaaaaaaaaaaaa", "key": "a" * 40, "name": "Mum's phone"}
+_d = {"id": "dadphonebbbbbbbbbbbb", "key": "b" * 40, "name": "Dad's phone"}
+_grp, _, _ = M.enrol({}, _m)
+_grp, _, _ = M.enrol(_grp, _d)
+_grp = M.apply_roster_changes(_grp, _m["id"], [_d["id"]], [])
+
+_anyone = M.public_roster(_grp)
+_approved = M.public_roster(_grp, _m["id"])
+ok("a bare code holder is given no fingerprints",
+   all("h" not in v for v in _anyone.values()), json.dumps(_anyone))
+ok("an approved phone is given them", all("h" in v for v in _approved.values()))
+ok("but never the secret itself",
+   all(v["h"] not in ("a" * 40, "b" * 40) for v in _approved.values()))
+ok("an unapproved phone in the roster gets none either",
+   all("h" not in v for v in M.public_roster(_grp, "strangerrrrrrrrrrrrr").values()))
+
+_w = {"roster": M.adopt_roster(_approved, _m["id"])}
+_w, _okm, _whym = M.enrol(_w, _m)
+ok("the phone that restores the group is in", _okm and _whym == "in")
+_w, _okd, _whyd = M.enrol(_w, _d)
+ok("and so is the other one, with nobody approving anything again", _okd and _whyd == "in")
+ok("an impostor claiming that phone's id is refused outright",
+   M.enrol({"roster": M.adopt_roster(_approved, _m["id"])},
+           {"id": _d["id"], "key": "z" * 40, "name": "Impostor"})[2] == "wrong-key")
+
+# A phone that remembered the group before fingerprints travelled cannot prove
+# anyone. Those come back named so they are recognisable, but waiting.
+_old = {"roster": M.adopt_roster(_anyone, _m["id"])}
+_old, _oko, _ = M.enrol(_old, _m)
+ok("restoring from an older phone still lets that phone in", _oko)
+ok("but the others come back waiting rather than trusted",
+   M.enrol({"roster": M.adopt_roster(_anyone, _m["id"])}, _d)[2] == "pending",
+   "a person confirms, which is what happened before any of this existed")
+ok("so an impostor gains nothing there either",
+   M.enrol({"roster": M.adopt_roster(_anyone, _m["id"])},
+           {"id": _d["id"], "key": "z" * 40, "name": "Impostor"})[1] is False)
+ok("their name still comes back, so the person approving knows who it is",
+   M.adopt_roster(_anyone, _m["id"])[_d["id"]]["n"] == "Dad's phone")
+
+ok("a made-up fingerprint is not accepted as one",
+   "h" not in M.adopt_roster({_m["id"]: dict(_approved[_m["id"]]),
+                              _d["id"]: {"n": "x", "ok": True, "t": 1, "h": "not-a-digest"}},
+                             _m["id"])[_d["id"]])
+ok("and that entry is therefore not trusted",
+   M.adopt_roster({_m["id"]: dict(_approved[_m["id"]]),
+                   _d["id"]: {"n": "x", "ok": True, "t": 1, "h": "nope"}},
+                  _m["id"])[_d["id"]]["ok"] is False)
 
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)
