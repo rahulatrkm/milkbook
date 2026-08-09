@@ -3087,9 +3087,10 @@ const DRIVE_NAME = "milkbook-backup.json";
 const DRIVE_ON_KEY = "milkbook_drive_on_v1";
 const DRIVE_ID_KEY = "milkbook_drive_id_v1";
 const DRIVE_WHO_KEY = "milkbook_drive_who_v1";
+const DRIVE_QUIET_KEY = "milkbook_drive_quiet_v1";
 const CAN_USE_DRIVE = !!GOOGLE_CLIENT_ID;
 
-let driveToken = null, driveTokenAt = 0, driveClient = null, driveBusy = false;
+let driveToken = null, driveTokenAt = 0, driveClient = null, driveBusy = false, driveTriedSilently = false;
 
 const driveOn = () => { try{ return localStorage.getItem(DRIVE_ON_KEY) === "1"; }catch(e){ return false; } };
 const driveFileId = () => { try{ return localStorage.getItem(DRIVE_ID_KEY) || ""; }catch(e){ return ""; } };
@@ -3131,17 +3132,32 @@ function loadGoogle(){
     which is why there appeared to be no way to change accounts at all. */
 async function driveAuth(mayAsk, chooseAccount){
   if(driveToken && !chooseAccount && Date.now() - driveTokenAt < 50 * 60 * 1000) return driveToken;
+  if(!mayAsk) driveTriedSilently = true;
   await loadGoogle();
   return new Promise((res, rej) => {
+    const settle = e => {
+      /* A silent request that cannot be answered is not a temporary blip: the
+         Google session has lapsed, or the browser will not carry its cookie
+         into a frame, and both stay true until somebody does something about
+         it. Trying again on the next open, and the one after that, is what had
+         this app asking to sign in over and over. */
+      if(!mayAsk) try{ localStorage.setItem(DRIVE_QUIET_KEY, String(Date.now() + DRIVE_QUIET_MS)); }catch(e2){}
+      rej(e || new Error("auth"));
+    };
     driveClient = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: DRIVE_SCOPE,
       callback: r => {
-        if(!r || !r.access_token) return rej(new Error("no token"));
+        if(!r || !r.access_token) return settle(new Error("no token"));
         driveToken = r.access_token; driveTokenAt = Date.now();
+        if(mayAsk){
+          // A tap that worked earns the automatic path back.
+          driveTriedSilently = false;
+          try{ localStorage.removeItem(DRIVE_QUIET_KEY); }catch(e2){}
+        }
         res(driveToken);
       },
-      error_callback: e => rej(e || new Error("auth")),
+      error_callback: settle,
     });
     driveClient.requestAccessToken({ prompt: chooseAccount ? "select_account" : mayAsk ? "" : "none" });
   });
@@ -3326,6 +3342,9 @@ async function driveSync(mayAsk, chooseAccount){
     renderBackupNote();
   }catch(e){
     if(driveState === "ok" || !driveState) driveState = "error";
+    // A failure counts as an attempt, or the gap would never hold anything back
+    // and a bad afternoon would mean one try per tap on the calendar.
+    driveAt = Date.now();
     renderBackupNote();
     throw e;
   }finally{
@@ -3339,6 +3358,15 @@ async function driveSync(mayAsk, chooseAccount){
    out instead of throwing a Google popup at somebody opening the app to mark
    one day. */
 const DRIVE_MIN_GAP = 15000;
+const DRIVE_QUIET_MS = 6 * 60 * 60 * 1000;
+const driveQuietUntil = () => { try{ return Number(localStorage.getItem(DRIVE_QUIET_KEY)) || 0; }catch(e){ return 0; } };
+const driveHasToken = () => !!driveToken && Date.now() - driveTokenAt < 50 * 60 * 1000;
+/* Syncing with a token in hand costs no window at all; every window this app
+   has ever shown came from going to fetch one. So the automatic path may spend
+   a token it already holds as often as it likes, and may only go and ask for
+   one once per visit — never after that has already failed. */
+const mayFetchToken = () => !driveTriedSilently && Date.now() > driveQuietUntil();
+
 function driveNudge(force){
   if(!driveOn()) return;
   // A change made while a sync is already running waits for the next one rather
@@ -3349,6 +3377,11 @@ function driveNudge(force){
     return;
   }
   if(!force && Date.now() - driveAt < DRIVE_MIN_GAP) return;
+  if(!driveHasToken() && !mayFetchToken()){
+    driveState = "signed-out";
+    renderBackupNote();
+    return;
+  }
   driveSync(false).catch(() => {});
 }
 
@@ -3420,9 +3453,9 @@ async function switchDriveAccount(){
 
 function disconnectDrive(){
   try{
-    for(const key of [DRIVE_ON_KEY, DRIVE_ID_KEY, DRIVE_WHO_KEY, MARK_KEY("drive")]) localStorage.removeItem(key);
+    for(const key of [DRIVE_ON_KEY, DRIVE_ID_KEY, DRIVE_WHO_KEY, DRIVE_QUIET_KEY, MARK_KEY("drive")]) localStorage.removeItem(key);
   }catch(e){}
-  driveToken = null; driveTokenAt = 0; driveState = "";
+  driveToken = null; driveTokenAt = 0; driveState = ""; driveTriedSilently = false;
   renderBackupNote();
   toast("Drive will not be written to again. The file already there is left alone.");
 }
