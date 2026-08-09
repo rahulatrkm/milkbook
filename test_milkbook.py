@@ -730,5 +730,82 @@ _flood = M.sanitise({"settings": {}, "days": {},
                      "log": [{"i": f"n{i}", "t": i, "m": "x"} for i in range(M.MAX_LOG + 200)]})
 ok("and the whole log is bounded", len(_flood["log"]) == M.MAX_LOG, str(len(_flood["log"])))
 
+print("\nKINDS OF MILK — a day says which one it was")
+# The whole feature rests on one thing: sanitise() rebuilds every day from
+# scratch, so a per-day field it has not been told about is silently dropped.
+# A day recorded as the expensive kind would come back from the first sync
+# priced as the default, and nobody would see it happen.
+_kinds = [{"id": "toned", "name": "Toned", "rateMinor": 5000, "t": 5},
+          {"id": "full", "name": "Full cream", "rateMinor": 8000, "t": 5}]
+_kb = M.sanitise({"settings": {"t": 1, "rateMinor": 6000, "qtyMl": 1000,
+                               "startDate": "2026-03-01", "kinds": _kinds},
+                  "days": {"2026-03-01": {"s": "yes", "t": 1},
+                           "2026-03-02": {"s": "yes", "t": 1, "k": "toned"},
+                           "2026-03-03": {"s": "yes", "t": 1, "k": "full"}}})
+ok("the kind survives a round trip", _kb["days"]["2026-03-02"].get("k") == "toned",
+   json.dumps(_kb["days"]["2026-03-02"]))
+ok("a day with no kind stays that way", "k" not in _kb["days"]["2026-03-01"])
+ok("the kinds themselves survive", len(_kb["settings"]["kinds"]) == 2,
+   json.dumps(_kb["settings"].get("kinds")))
+
+_march = M.month_summary(_kb, 2026, 3, "2026-03-03")
+ok("each day is billed at its own kind's price",
+   _march["amountMinor"] == 6000 + 5000 + 8000, str(_march["amountMinor"]))
+ok("and the litres still add up", _march["totalMl"] == 3000 and _march["delivered"] == 3,
+   f"{_march['totalMl']}ml over {_march['delivered']}d")
+
+ok("a kind nobody has heard of falls back to the default price rather than nothing",
+   M.month_summary(M.sanitise({"settings": {"t": 1, "rateMinor": 6000, "qtyMl": 1000,
+                                            "startDate": "2026-03-01"},
+                               "days": {"2026-03-01": {"s": "yes", "t": 1, "k": "ghost"}}}),
+                   2026, 3, "2026-03-01")["amountMinor"] == 6000)
+
+ok("a junk kind id on a day is dropped",
+   "k" not in M.sanitise({"days": {"2026-03-01": {"s": "yes", "t": 1, "k": "../../etc"}}})["days"]["2026-03-01"])
+ok("so is one that is not a string",
+   "k" not in M.sanitise({"days": {"2026-03-01": {"s": "yes", "t": 1, "k": 7}}})["days"]["2026-03-01"])
+ok("a kind with no id is not stored",
+   M.sanitise({"settings": {"kinds": [{"name": "Nameless", "rateMinor": 1}]}})["settings"]["kinds"] == [])
+ok("a kind's price is capped like any other",
+   M.sanitise({"settings": {"kinds": [{"id": "a", "rateMinor": 10 ** 12}]}})
+   ["settings"]["kinds"][0]["rateMinor"] == 10_000_000)
+ok("a kind's name is trimmed",
+   len(M.sanitise({"settings": {"kinds": [{"id": "a", "name": "x" * 500}]}})
+       ["settings"]["kinds"][0]["name"]) == 40)
+ok("too many kinds are cut off",
+   len(M.sanitise({"settings": {"kinds": [{"id": f"k{i}"} for i in range(M.MAX_KINDS + 20)]}})
+       ["settings"]["kinds"]) == M.MAX_KINDS)
+ok("a duplicate id is not stored twice",
+   len(M.sanitise({"settings": {"kinds": [{"id": "a", "name": "One"}, {"id": "a", "name": "Two"}]}})
+       ["settings"]["kinds"]) == 1)
+ok("kinds that are not a list are ignored",
+   M.sanitise({"settings": {"kinds": "toned"}})["settings"]["kinds"] == [])
+ok("a phone that has never heard of kinds does not send an empty list",
+   "kinds" not in M.sanitise({"settings": {"t": 1, "vendor": "Dairy"}})["settings"])
+
+print("\nKINDS OF MILK — two phones adding one each")
+# Last-write-wins on the whole list would drop one of them, and every day
+# already recorded against the lost kind would quietly revert to the default
+# price. They are unioned by id instead.
+_phoneA = M.sanitise({"settings": {"t": 10, "at": {"kinds": 10},
+                                   "kinds": [{"id": "toned", "name": "Toned", "rateMinor": 5000, "t": 10}]},
+                      "days": {}})
+_phoneB = M.sanitise({"settings": {"t": 11, "at": {"kinds": 11},
+                                   "kinds": [{"id": "full", "name": "Full cream", "rateMinor": 8000, "t": 11}]},
+                      "days": {}})
+_both = M.merge(_phoneA, _phoneB)["settings"]["kinds"]
+ok("both kinds survive the merge", sorted(k["id"] for k in _both) == ["full", "toned"],
+   json.dumps(_both))
+
+_edited = M.sanitise({"settings": {"t": 20, "at": {"kinds": 20},
+                                   "kinds": [{"id": "toned", "name": "Toned", "rateMinor": 5500, "t": 20}]},
+                      "days": {}})
+_after = {k["id"]: k for k in M.merge(_phoneA, _edited)["settings"]["kinds"]}
+ok("a price change to one kind wins on that kind alone",
+   _after["toned"]["rateMinor"] == 5500, json.dumps(_after))
+_stale = {k["id"]: k for k in M.merge(_edited, _phoneA)["settings"]["kinds"]}
+ok("and an older copy of it does not win back",
+   _stale["toned"]["rateMinor"] == 5500, json.dumps(_stale))
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

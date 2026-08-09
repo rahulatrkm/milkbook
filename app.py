@@ -158,7 +158,8 @@ def _carry_unknown(raw: dict, known: set) -> dict:
 
 
 KNOWN_SETTINGS = {"t", "at", "vendor", "qtyMl", "rateMinor", "currency", "startDate",
-                  "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl"}
+                  "skipWeekly", "lockAfterDays", "defaultState", "lockChoice", "fullControl",
+                  "kinds"}
 # The roster is the server's, not the client's: it is never read out of an
 # incoming body, only changed through approve/revoke by a device already in it.
 # That way a phone that has not been let in cannot write itself an invitation.
@@ -171,6 +172,56 @@ NEVER_STORE = KNOWN_TOP | ENVELOPE
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 DEVICE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
 MAX_DEVICES = 50
+KIND_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
+MAX_KINDS = 24
+
+
+def _clean_kinds(raw) -> list:
+    """The kinds of milk a book deals in, each with its own price.
+
+    A day names the kind it was, so these have to survive a round trip or every
+    day recorded as anything but the default silently reverts to the default
+    price on the next sync.
+    """
+    out: list = []
+    seen: set = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:MAX_KINDS]:
+        if not isinstance(item, dict):
+            continue
+        kid = item.get("id")
+        if not isinstance(kid, str) or not KIND_ID_RE.match(kid) or kid in seen:
+            continue
+        rate = item.get("rateMinor")
+        kind = {
+            "id": kid,
+            "name": str(item.get("name") or "")[:40],
+            "rateMinor": max(0, min(int(rate), 10_000_000)) if isinstance(rate, (int, float)) else 0,
+            "t": int(item["t"]) if isinstance(item.get("t"), (int, float)) else 0,
+        }
+        if item.get("off"):
+            kind["off"] = True
+        seen.add(kid)
+        out.append(kind)
+    return out
+
+
+def _merge_kinds(a_kinds, b_kinds) -> list:
+    """Union by id, newest wins per kind.
+
+    Last-write-wins on the whole list would drop a kind added on one phone the
+    moment another phone saved any setting — and every day already recorded
+    against that kind would quietly fall back to the default price.
+    """
+    out: dict = {}
+    for kind in list(a_kinds or []) + list(b_kinds or []):
+        if not isinstance(kind, dict) or not kind.get("id"):
+            continue
+        prev = out.get(kind["id"])
+        if prev is None or (kind.get("t") or 0) >= (prev.get("t") or 0):
+            out[kind["id"]] = kind
+    return list(out.values())[:MAX_KINDS]
 
 
 def sanitise(book: dict) -> dict:
@@ -200,6 +251,11 @@ def sanitise(book: dict) -> dict:
         for flag in ("lockChoice", "fullControl"):
             if flag in raw_settings:
                 settings[flag] = bool(raw_settings[flag])
+        # Same reasoning as the flags above: only written back when the client
+        # sent it, so a phone that has never heard of milk kinds does not answer
+        # with an empty list and erase them.
+        if "kinds" in raw_settings:
+            settings["kinds"] = _clean_kinds(raw_settings.get("kinds"))
         # When each individual setting last changed. Without this the whole
         # settings object is one item with one timestamp, and because every
         # field above is given a default whether the client sent it or not, a
@@ -228,6 +284,11 @@ def sanitise(book: dict) -> dict:
             qty = entry.get("q")
             if isinstance(qty, (int, float)):
                 clean["q"] = max(0, min(int(qty), 100_000))
+            # Which kind of milk came that day. Unknown day fields are rebuilt
+            # away here, so this has to be named or it never survives a sync.
+            kind = entry.get("k")
+            if isinstance(kind, str) and KIND_ID_RE.match(kind):
+                clean["k"] = kind
             days[key] = clean
 
     # Month locks. Stored the same way as a day so they merge the same way: a
@@ -436,6 +497,8 @@ def merge(a: dict, b: dict) -> dict:
     if at:
         settings["at"] = at
     settings["t"] = max(a_set.get("t") or 0, b_set.get("t") or 0)
+    if "kinds" in a_set or "kinds" in b_set:
+        settings["kinds"] = _merge_kinds(a_set.get("kinds"), b_set.get("kinds"))
 
     def newest(x_map: dict, y_map: dict) -> dict:
         out = {}
@@ -502,6 +565,22 @@ def rate_for(book: dict, day_key: str) -> int:
     return int(rates[best].get("r") or 0)
 
 
+def rate_for_day(book: dict, day_key: str) -> int:
+    """The price actually charged: the kind's own, or the default timeline.
+
+    A kind nobody here has heard of falls back to the default rather than
+    billing at nothing — that happens for a moment when one phone adds a kind
+    and another has not synced it yet.
+    """
+    entry = (book.get("days") or {}).get(day_key) or {}
+    kid = entry.get("k")
+    if kid:
+        for kind in (book.get("settings") or {}).get("kinds") or []:
+            if isinstance(kind, dict) and kind.get("id") == kid:
+                return int(kind.get("rateMinor") or 0)
+    return rate_for(book, day_key)
+
+
 def _round_half_up(value: float) -> int:
     """JavaScript's Math.round, which is half away from zero.
 
@@ -533,7 +612,7 @@ def month_summary(book: dict, year: int, month: int, today_key: str) -> dict:
         if state == "yes":
             delivered += 1
             total_ml += qty
-            r = rate_for(book, key)
+            r = rate_for_day(book, key)
             by_rate[r] = by_rate.get(r, 0) + qty
         elif state == "skip":
             skipped += 1
