@@ -538,7 +538,9 @@ def adopt_roster(raw, device_id: str) -> dict:
         if not isinstance(did, str) or not DEVICE_ID_RE.match(did) or not isinstance(entry, dict):
             continue
         digest = entry.get("h")
-        proven = isinstance(digest, str) and KEY_DIGEST_RE.match(digest)
+        # bool(), because re.match returns a Match: truthy, and not JSON, so it
+        # reached the store and took the whole write down with it.
+        proven = bool(isinstance(digest, str) and KEY_DIGEST_RE.match(digest))
         out[did] = {"n": str(entry.get("n") or "A phone")[:40],
                     # The phone doing the restoring proves its own key on this
                     # very request, so it needs no fingerprint to be believed.

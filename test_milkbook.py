@@ -1044,5 +1044,19 @@ ok("and that entry is therefore not trusted",
                    _d["id"]: {"n": "x", "ok": True, "t": 1, "h": "nope"}},
                   _m["id"])[_d["id"]]["ok"] is False)
 
+# A restored roster is written straight into the store, so every value in it has
+# to be JSON. A regex Match is truthy and is not, which took the whole write
+# down with a 500 and was invisible to any test that only asked "is it true?".
+ok("a restored group can actually be stored",
+   json.dumps(M.adopt_roster(_approved, _m["id"])),
+   "it goes to the database as JSON the moment it is adopted")
+ok("and every standing in it is a real boolean",
+   all(v["ok"] is True or v["ok"] is False
+       for v in M.adopt_roster(_approved, _m["id"]).values()))
+ok("including when the fingerprints are missing",
+   all(v["ok"] is True or v["ok"] is False
+       for v in M.adopt_roster(_anyone, _m["id"]).values())
+   and json.dumps(M.adopt_roster(_anyone, _m["id"])))
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)
