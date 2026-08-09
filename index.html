@@ -254,11 +254,37 @@
   .btn:hover{filter:brightness(1.08)} .btn:active{transform:scale(.99)}
   .btn.sec{background:var(--raised); color:var(--text); border:1px solid var(--line-2)}
   .btn.danger{background:transparent; color:var(--bad); border:1px solid var(--line-2)}
+  /* Undoing a choice should not shout as loudly as making one. Without this,
+     ghost fell through to the filled accent button and every sheet read as a
+     column of equally urgent things to do. */
+  .btn.ghost{background:transparent; color:var(--text-2); border:1px solid var(--line);
+    font-weight:550; font-size:13.5px; padding:10px}
+  .btn.ghost:hover{background:var(--raised); filter:none}
   .chips{display:flex; gap:6px; flex-wrap:wrap}
   .chip{padding:7px 12px; border-radius:999px; border:1px solid var(--line-2); font-size:12.5px; font-weight:550;
     color:var(--text-2); transition:.15s}
   .chip.on{background:var(--accent); border-color:var(--accent); color:#fff}
   @media (prefers-color-scheme: dark){ .chip.on{color:#0b0c0f} }
+
+  /* A setting a household touches once a year is still worth having, but it is
+     not worth a screenful. Settings had grown to sixteen blocks stacked in one
+     column, which reads as a form to fill in rather than a page to glance at.
+     Closed, a group is a single line; opened, it is exactly the fields it was. */
+  .more{border:1px solid var(--line); border-radius:12px; background:var(--raised); margin-bottom:13px}
+  /* The flex layout sits on a span inside, not on the summary: giving summary a
+     display of its own costs it the disclosure role, and the group stopped
+     being announced as something that opens. */
+  .more > summary{cursor:pointer; padding:12px 14px; font-size:13px; font-weight:600; color:var(--text-2)}
+  .more > summary::-webkit-details-marker{display:none}
+  .more > summary::marker{content:""}
+  .more > summary .sumline{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  .more > summary .sumline::after{content:""; flex:none; width:7px; height:7px; margin-right:3px;
+    border-right:2px solid var(--line-2); border-bottom:2px solid var(--line-2);
+    transform:rotate(45deg) translateY(-2px); transition:transform .18s}
+  .more[open] > summary{border-bottom:1px solid var(--line)}
+  .more[open] > summary .sumline::after{transform:rotate(-135deg) translateY(-1px)}
+  .more .inner{padding:14px 14px 1px; background:var(--surface); border-radius:0 0 12px 12px}
+  .more .inner > .field:last-child{margin-bottom:13px}
 
   .billrow{display:flex; justify-content:space-between; align-items:baseline; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px}
   .billrow:last-of-type{border-bottom:0}
@@ -459,6 +485,11 @@
       <span class="t"><b>Sync across phones</b><span id="syncSub">Share one code with your family</span></span>
       <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
     </button>
+    <button class="row" id="btnSafe">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5h18V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><rect x="2" y="3.5" width="20" height="5" rx="1.2"/><path d="M10 12.5h4"/></svg>
+      <span class="t"><b>Backups and history</b><span id="safeSub">Keep a copy that outlives this phone</span></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
     <button class="row" id="btnInstall" hidden>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2.5"/><path d="M12 7v7m0 0-3-3m3 3 3-3"/><path d="M10.5 18.5h3"/></svg>
       <span class="t"><b>Install as an app</b><span id="installSub">Own icon, full screen, works offline</span></span>
@@ -491,22 +522,6 @@
     <div class="field"><label for="fStart">Tracking from</label><input id="fStart" type="date" /></div>
   </div>
   <div class="field">
-    <label>Other vendors</label>
-    <div id="fVendors"></div>
-    <div class="chips" id="fVendorAdd"></div>
-    <p class="hint">Only if more than one person brings milk. The name at the top is your first vendor. Each kind
-      below belongs to one of them, which is how two vendors can charge different prices for the same milk — and
-      each is billed and owed separately.</p>
-  </div>
-  <div class="field">
-    <label>Other kinds of milk</label>
-    <div id="fKinds"></div>
-    <div class="chips" id="fKindAdd"></div>
-    <p class="hint">Only if you buy more than one sort. Each carries its own price per litre — set it to what your
-      vendor actually charges. Marking a day the ordinary way still uses the price above; long press or right
-      click a day to say it was one of these.</p>
-  </div>
-  <div class="field">
     <label>Vendor's weekly off</label>
     <div class="chips" id="fOff"></div>
     <p class="hint">Days your vendor never delivers. These are not counted or billed.</p>
@@ -516,49 +531,87 @@
     <select id="fDefault"></select>
     <p class="hint" id="fDefaultHint"></p>
   </div>
-  <div class="field">
-    <label for="fLock">Close the books automatically</label>
-    <select id="fLock">
-      <option value="0">Never — I will lock months myself</option>
-      <option value="3">3 days after a month ends</option>
-      <option value="7">7 days after a month ends</option>
-      <option value="15">15 days after a month ends</option>
-      <option value="31">A month after a month ends</option>
-    </select>
-    <p class="hint">A closed month cannot be changed by a stray tap, on any phone sharing this book. You can always unlock one when you genuinely need to.</p>
-  </div>
-  <div class="field">
-    <label for="fGuard">This month's calendar</label>
-    <select id="fGuard">
-      <option value="1">Protected — tap the button below for today</option>
-      <option value="0">Open — any day this month can be tapped</option>
-    </select>
-    <p class="hint">Closing months protects the ones that have ended, but the month on screen is the one a
-      thumb actually brushes. While it is protected, tapping a day does nothing and today is marked with
-      the button at the bottom — a long press there sets a different quantity.</p>
-  </div>
-  <div class="field">
-    <label for="fOpenFor">When I open a closed month, keep it open for</label>
-    <select id="fOpenFor">
-      <option value="15">15 minutes</option>
-      <option value="60">An hour</option>
-      <option value="240">4 hours</option>
-      <option value="0">The rest of today</option>
-    </select>
-    <p class="hint">Opening a month is for making a correction, not for leaving it open. When the time is
-      up it protects or closes itself again, and the chip above the calendar hands it back the moment
-      you are done.</p>
-  </div>
-  <div class="field">
-    <label for="fFull">Full control</label>
-    <select id="fFull">
-      <option value="0">Normal — closed months are protected</option>
-      <option value="1">On — let me change any day, in any month</option>
-    </select>
-    <p class="hint">Turns off every lock at once, for whoever keeps the book. Nothing is hidden and nothing
-      is deleted — it only stops the book refusing you. A banner stays on screen while it is on, so it is
-      never on by accident.</p>
-  </div>
+
+  <details class="more" id="grpMilk">
+    <summary><span class="sumline">More than one vendor, or more than one milk</span></summary>
+    <div class="inner">
+      <div class="field">
+        <label>Other vendors</label>
+        <div id="fVendors"></div>
+        <div class="chips" id="fVendorAdd"></div>
+        <p class="hint">Only if more than one person brings milk. The name at the top is your first vendor. Each kind
+          below belongs to one of them, which is how two vendors can charge different prices for the same milk — and
+          each is billed and owed separately.</p>
+      </div>
+      <div class="field">
+        <label>Other kinds of milk</label>
+        <div id="fKinds"></div>
+        <div class="chips" id="fKindAdd"></div>
+        <p class="hint">Only if you buy more than one sort. Each carries its own price per litre — set it to what your
+          vendor actually charges. Marking a day the ordinary way still uses the price above; long press or right
+          click a day to say it was one of these.</p>
+      </div>
+    </div>
+  </details>
+
+  <details class="more" id="grpLocks">
+    <summary><span class="sumline">Locking and protection</span></summary>
+    <div class="inner">
+      <div class="field">
+        <label for="fLock">Close the books automatically</label>
+        <select id="fLock">
+          <option value="0">Never — I will lock months myself</option>
+          <option value="3">3 days after a month ends</option>
+          <option value="7">7 days after a month ends</option>
+          <option value="15">15 days after a month ends</option>
+          <option value="31">A month after a month ends</option>
+        </select>
+        <p class="hint">A closed month cannot be changed by a stray tap, on any phone sharing this book. You can always unlock one when you genuinely need to.</p>
+      </div>
+      <div class="field">
+        <label for="fGuard">This month's calendar</label>
+        <select id="fGuard">
+          <option value="1">Protected — tap the button below for today</option>
+          <option value="0">Open — any day this month can be tapped</option>
+        </select>
+        <p class="hint">Closing months protects the ones that have ended, but the month on screen is the one a
+          thumb actually brushes. While it is protected, tapping a day does nothing and today is marked with
+          the button at the bottom — a long press there sets a different quantity.</p>
+      </div>
+      <div class="field">
+        <label for="fOpenFor">When I open a closed month, keep it open for</label>
+        <select id="fOpenFor">
+          <option value="15">15 minutes</option>
+          <option value="60">An hour</option>
+          <option value="240">4 hours</option>
+          <option value="0">The rest of today</option>
+        </select>
+        <p class="hint">Opening a month is for making a correction, not for leaving it open. When the time is
+          up it protects or closes itself again, and the chip above the calendar hands it back the moment
+          you are done.</p>
+      </div>
+      <div class="field">
+        <label for="fFull">Full control</label>
+        <select id="fFull">
+          <option value="0">Normal — closed months are protected</option>
+          <option value="1">On — let me change any day, in any month</option>
+        </select>
+        <p class="hint">Turns off every lock at once, for whoever keeps the book. Nothing is hidden and nothing
+          is deleted — it only stops the book refusing you. A banner stays on screen while it is on, so it is
+          never on by accident.</p>
+      </div>
+    </div>
+  </details>
+
+  <button class="btn" id="saveSettings">Save</button>
+</div>
+
+<!-- backups and history -->
+<div class="sheet" id="shSafe">
+  <div class="grab"></div>
+  <h2>Backups and history</h2>
+  <p class="lede">Your records live on your phones and nowhere else. A copy kept somewhere else is
+    the one thing that survives a phone being lost, wiped or replaced.</p>
   <div class="field">
     <label for="fEvery">Keep a copy off this phone</label>
     <select id="fEvery">
@@ -568,41 +621,42 @@
       <option value="month">Once a month</option>
       <option value="off">Never — I will do it myself</option>
     </select>
-    <div id="fileBox" hidden>
-      <button class="btn sec" id="btnPick" type="button" style="margin-top:8px">Choose a file to keep up to date</button>
-      <button class="btn ghost" id="btnUnpick" type="button" hidden style="margin-top:8px">Stop using that file</button>
-      <p class="hint">Pick a file inside your Google Drive, OneDrive or Dropbox folder and the book
-        reaches the cloud on its own, without this app ever touching your account. Choose
-        <b>allow on every visit</b> when the browser asks, so it keeps working without being told again.</p>
-    </div>
     <div id="driveBox" hidden>
       <button class="btn sec" id="btnDrive" type="button" style="margin-top:8px">Save to Google Drive</button>
-      <button class="btn ghost" id="btnDriveOff" type="button" hidden style="margin-top:8px">Stop using Google Drive</button>
+      <p class="hint" id="driveWho" hidden></p>
+      <button class="btn ghost" id="btnDriveSwitch" type="button" hidden style="margin-top:6px">Use a different Google account</button>
+      <button class="btn ghost" id="btnDriveOff" type="button" hidden style="margin-top:6px">Stop using Google Drive</button>
       <p class="hint">Keeps one file in your own Drive and reads it back when you open the app, so a new
         phone only has to sign in. This app can only touch the file it made — nothing else in your Drive
         — and never sees your password.</p>
     </div>
-    <button class="btn" id="btnBackup" type="button" style="margin-top:8px">Send a copy now</button>
-    <button class="btn sec" id="btnImport" type="button" style="margin-top:8px">Restore from a copy</button>
-    <input id="fileImport" type="file" accept=".json,.html,application/json,text/html" hidden />
+    <div id="fileBox" hidden>
+      <button class="btn sec" id="btnPick" type="button" style="margin-top:8px">Choose a file to keep up to date</button>
+      <button class="btn ghost" id="btnUnpick" type="button" hidden style="margin-top:6px">Stop using that file</button>
+      <p class="hint">Pick a file inside your Google Drive, OneDrive or Dropbox folder and the book
+        reaches the cloud on its own, without this app ever touching your account. Choose
+        <b>allow on every visit</b> when the browser asks, so it keeps working without being told again.</p>
+    </div>
     <p class="hint" id="backupNote"></p>
-    <p class="hint">Your records live on your phones and nowhere else — the sharing code is a meeting
-      point, not storage. A copy kept somewhere else is the one thing that survives a phone being lost,
-      wiped or replaced. Restoring adds a copy back in without removing anything already here.</p>
   </div>
   <div class="field">
-    <label>Keep a copy on this device</label>
-    <button class="btn ghost" id="btnLocal" type="button">Save this app as a file</button>
-    <p class="hint">Downloads the whole app as one file, with your book already inside it. Open that
-      file any time — no internet, no server, nothing to install. It is a snapshot: days you record
-      here afterwards will not appear in it, so save a fresh one when you want it up to date.</p>
+    <label>By hand, right now</label>
+    <button class="btn sec" id="btnBackup" type="button">Send a copy now</button>
+    <button class="btn ghost" id="btnImport" type="button" style="margin-top:6px">Restore from a copy</button>
+    <input id="fileImport" type="file" accept=".json,.html,application/json,text/html" hidden />
+    <button class="btn ghost" id="btnLocal" type="button" style="margin-top:6px">Save this app as a file</button>
+    <p class="hint">Restoring adds a copy back in without removing anything already here. Saving the app as
+      a file downloads the whole thing with your book inside it — open it any time, with no internet and
+      nothing to install. That one is a snapshot: days recorded here afterwards will not be in it.</p>
     <p class="hint" id="localNote" hidden><b>You are using a saved copy.</b> It works entirely offline
       and keeps its own book, separate from the one in your browser.</p>
   </div>
-  <button class="btn sec" id="btnLog" type="button" style="margin-bottom:8px">What changed, and who changed it</button>
-  <button class="btn sec" id="btnVersions" type="button" style="margin-bottom:8px">Earlier versions of this book</button>
-  <button class="btn sec" id="btnRestore" type="button" hidden style="margin-bottom:8px"></button>
-  <button class="btn" id="saveSettings">Save</button>
+  <div class="field">
+    <label>History</label>
+    <button class="btn sec" id="btnLog" type="button">What changed, and who changed it</button>
+    <button class="btn sec" id="btnVersions" type="button" style="margin-top:6px">Earlier versions of this book</button>
+    <button class="btn sec" id="btnRestore" type="button" hidden style="margin-top:6px"></button>
+  </div>
   <button class="btn danger" id="btnReset" style="margin-top:8px">Erase all data</button>
 </div>
 
@@ -2443,12 +2497,20 @@ function openSettings(){
     c.addEventListener("click", () => c.classList.toggle("on"));
     off.appendChild(c);
   }
+  // Open a group only when it already holds something, so a household with one
+  // vendor and one milk never sees either, and one with three does not have to
+  // go looking for them.
+  $("grpMilk").open = vendorRows.length > 0 || kindRows.length > 0;
+  $("grpLocks").open = !!st.fullControl;
   sheet("shSettings");
   settingsMark = settingsFormRaw();
-  renderRestore();
-  renderBackupNote();
 }
 $("btnSettings").addEventListener("click", openSettings);
+$("btnSafe").addEventListener("click", () => {
+  renderRestore();
+  renderBackupNote();
+  sheet("shSafe");
+});
 
 /**
  * Write down what every past day already meant.
@@ -2925,18 +2987,37 @@ function renderBackupNote(){
   const drive = $("driveBox");
   if(drive){
     drive.hidden = !CAN_USE_DRIVE || backupEvery() === "off";
-    const on = driveOn();
+    const on = driveOn(), who = driveWho();
     if($("btnDrive")) $("btnDrive").textContent = on ? "Send to Drive now" : "Save to Google Drive";
     if($("btnDriveOff")) $("btnDriveOff").hidden = !on;
+    // Switching accounts is only meaningful once there is an account, and it is
+    // only obvious which one you would be leaving if the app says whose it is.
+    if($("btnDriveSwitch")) $("btnDriveSwitch").hidden = !on;
+    const line = $("driveWho");
+    if(line){
+      line.hidden = !on;
+      line.innerHTML = who
+        ? `Using the Drive of <b>${esc(who)}</b>.`
+        : "Signed in to Google.";
+    }
   }
-  const el = $("backupNote");
-  if(!el) return;
-  if(!Object.keys(store.days || {}).length){ el.textContent = ""; return; }
   let at = 0;
   try{ at = Number(localStorage.getItem(BACKUP_AT_KEY)) || 0; }catch(e){}
   const ago = at ? Math.floor((Date.now() - at) / 86400000) : -1;
   const when = ago < 0 ? "" : ago === 0 ? "Last copy saved today."
     : ago === 1 ? "Last copy saved yesterday." : `Last copy saved ${ago} days ago.`;
+  const sub = $("safeSub");
+  if(sub) sub.textContent =
+    fileHandle && fileBlocked ? `${fileHandle.name} is no longer being written to`
+    : driveOn() && fileHandle ? `Kept in Google Drive and ${fileHandle.name}`
+    : driveOn() ? (driveWho() ? `Kept in the Drive of ${driveWho()}` : "Kept in your Google Drive")
+    : fileHandle ? `Kept up to date in ${fileHandle.name}`
+    : !Object.keys(store.days || {}).length ? "Keep a copy that outlives this phone"
+    : at ? when.replace(/\.$/, "") + (backupDue() ? " — a fresh one is due" : "")
+    : "No copy has been kept yet";
+  const el = $("backupNote");
+  if(!el) return;
+  if(!Object.keys(store.days || {}).length){ el.textContent = ""; return; }
   if(fileHandle && fileBlocked){
     el.innerHTML = `<b>${esc(fileHandle.name)} is no longer being written to.</b> The browser needs `
       + `permission again before this book can keep itself copied there. ${esc(when)}`;
@@ -2982,12 +3063,14 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const DRIVE_NAME = "milkbook-backup.json";
 const DRIVE_ON_KEY = "milkbook_drive_on_v1";
 const DRIVE_ID_KEY = "milkbook_drive_id_v1";
+const DRIVE_WHO_KEY = "milkbook_drive_who_v1";
 const CAN_USE_DRIVE = !!GOOGLE_CLIENT_ID;
 
 let driveToken = null, driveTokenAt = 0, driveClient = null, driveBusy = false;
 
 const driveOn = () => { try{ return localStorage.getItem(DRIVE_ON_KEY) === "1"; }catch(e){ return false; } };
 const driveFileId = () => { try{ return localStorage.getItem(DRIVE_ID_KEY) || ""; }catch(e){ return ""; } };
+const driveWho = () => { try{ return localStorage.getItem(DRIVE_WHO_KEY) || ""; }catch(e){ return ""; } };
 
 function loadGoogle(){
   if(window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
@@ -3001,9 +3084,12 @@ function loadGoogle(){
   });
 }
 
-/** A token good for about an hour. Silent once consent is given; a tap otherwise. */
-async function driveAuth(mayAsk){
-  if(driveToken && Date.now() - driveTokenAt < 50 * 60 * 1000) return driveToken;
+/** A token good for about an hour. Silent once consent is given; a tap otherwise.
+    `select_account` is the only way Google will offer the chooser again — with
+    one account already signed in, an ordinary prompt reuses it without asking,
+    which is why there appeared to be no way to change accounts at all. */
+async function driveAuth(mayAsk, chooseAccount){
+  if(driveToken && !chooseAccount && Date.now() - driveTokenAt < 50 * 60 * 1000) return driveToken;
   await loadGoogle();
   return new Promise((res, rej) => {
     driveClient = google.accounts.oauth2.initTokenClient({
@@ -3016,7 +3102,7 @@ async function driveAuth(mayAsk){
       },
       error_callback: e => rej(e || new Error("auth")),
     });
-    driveClient.requestAccessToken({ prompt: mayAsk ? "" : "none" });
+    driveClient.requestAccessToken({ prompt: chooseAccount ? "select_account" : mayAsk ? "" : "none" });
   });
 }
 
@@ -3067,12 +3153,24 @@ async function driveDownload(){
   return bookFromCopy(await r.text());
 }
 
+/** Whose Drive this is. Read from Drive itself rather than asking for a second
+    scope, so knowing which account is in use costs no extra permission. */
+async function noteDriveAccount(){
+  try{
+    const r = await driveCall("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)");
+    if(!r.ok) return;
+    const body = await r.json();
+    const email = body && body.user && body.user.emailAddress;
+    if(email) try{ localStorage.setItem(DRIVE_WHO_KEY, String(email).slice(0, 120)); }catch(e){}
+  }catch(e){}
+}
+
 /** Read what Drive holds, fold it in, then write the result back. */
-async function driveSync(mayAsk){
+async function driveSync(mayAsk, chooseAccount){
   if(driveBusy) return;
   driveBusy = true;
   try{
-    await driveAuth(mayAsk);
+    await driveAuth(mayAsk, chooseAccount);
     const theirs = await driveDownload();
     if(theirs){
       const before = Object.keys(store.days).length;
@@ -3085,6 +3183,7 @@ async function driveSync(mayAsk){
       saveStore(store); render();
     }
     await driveUpload(mayAsk);
+    if(mayAsk) await noteDriveAccount();
   }finally{
     driveBusy = false;
   }
@@ -3101,9 +3200,37 @@ async function connectDrive(){
   }
 }
 
+/* Changing accounts is not signing in again: the file id, the fingerprint of
+   what was last sent and the remembered address all belong to the old account,
+   and left behind they would have the app patching a file it can no longer see
+   and then deciding there was nothing new to upload. */
+async function switchDriveAccount(){
+  const was = driveWho();
+  driveToken = null; driveTokenAt = 0;
+  for(const key of [DRIVE_ID_KEY, DRIVE_WHO_KEY, MARK_KEY("drive")]){
+    try{ localStorage.removeItem(key); }catch(e){}
+  }
+  renderBackupNote();
+  try{
+    await driveSync(true, true);
+    try{ localStorage.setItem(DRIVE_ON_KEY, "1"); }catch(e){}
+    renderBackupNote();
+    const now = driveWho();
+    toast(now ? `Now saving to the Drive of ${now}` : "Now saving to the other Google account");
+  }catch(e){
+    // Backing out of the chooser must not leave the app half-signed-out of an
+    // account that was working a moment ago.
+    if(was) try{ localStorage.setItem(DRIVE_WHO_KEY, was); }catch(e2){}
+    renderBackupNote();
+    toast("The account was not changed");
+  }
+}
+
 function disconnectDrive(){
-  try{ localStorage.removeItem(DRIVE_ON_KEY); localStorage.removeItem(DRIVE_ID_KEY); }catch(e){}
-  driveToken = null;
+  try{
+    for(const key of [DRIVE_ON_KEY, DRIVE_ID_KEY, DRIVE_WHO_KEY, MARK_KEY("drive")]) localStorage.removeItem(key);
+  }catch(e){}
+  driveToken = null; driveTokenAt = 0;
   renderBackupNote();
   toast("Drive will not be written to again. The file already there is left alone.");
 }
@@ -3196,6 +3323,7 @@ $("btnUnpick").addEventListener("click", () => {
   toast("That file will not be written to again");
 });
 $("btnDrive").addEventListener("click", connectDrive);
+$("btnDriveSwitch").addEventListener("click", switchDriveAccount);
 $("btnDriveOff").addEventListener("click", disconnectDrive);
 $("btnImport").addEventListener("click", () => $("fileImport").click());
 $("fileImport").addEventListener("change", () => {
