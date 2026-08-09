@@ -129,6 +129,21 @@
     background:repeating-linear-gradient(45deg,transparent,transparent 5px,rgba(123,131,152,.13) 5px,rgba(123,131,152,.13) 10px)}
   .day.today{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent)}
   .day .q{position:absolute; bottom:3px; font-size:8.5px; font-weight:600; color:var(--text-3); line-height:1}
+  /* A day that was not the ordinary milk. The dot only says "not the default";
+     which kind it was is in the day's label, the day sheet and the bill, because
+     a 6px colour is a hint and must not be the only place the answer lives. */
+  .day .k{position:absolute; top:3px; right:3px; width:6px; height:6px; border-radius:50%}
+
+  .kindrow{display:flex; gap:7px; align-items:center; margin-bottom:7px}
+  .kindrow input{font:inherit; font-size:14px; padding:9px 11px; border-radius:9px;
+    border:1px solid var(--line-2); background:var(--surface); color:var(--text); min-width:0}
+  .kindrow .kName{flex:1 1 auto}
+  .kindrow .kRate{flex:0 0 90px}
+  .kindrow .kDel{flex:0 0 auto; width:34px; height:34px; border-radius:9px; cursor:pointer;
+    border:1px solid var(--line-2); background:var(--raised); color:var(--text-3); font-size:14px}
+  .kindrow .kDel:hover{color:var(--bad); border-color:var(--bad)}
+  .chip.add{border-style:dashed; color:var(--text-3)}
+  .chip.add:hover{border-style:solid; color:var(--accent); border-color:var(--accent)}
 
   .monthside{display:flex; flex-direction:column; align-items:flex-end; gap:7px}
   .lockchip{display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
@@ -469,6 +484,14 @@
     <div class="field"><label for="fStart">Tracking from</label><input id="fStart" type="date" /></div>
   </div>
   <div class="field">
+    <label>Other kinds of milk</label>
+    <div id="fKinds"></div>
+    <div class="chips" id="fKindAdd"></div>
+    <p class="hint">Only if you buy more than one sort. Each carries its own price per litre — set it to what your
+      vendor actually charges. Marking a day the ordinary way still uses the price above; long press or right
+      click a day to say it was one of these.</p>
+  </div>
+  <div class="field">
     <label>Vendor's weekly off</label>
     <div class="chips" id="fOff"></div>
     <p class="hint">Days your vendor never delivers. These are not counted or billed.</p>
@@ -572,10 +595,15 @@
 <div class="sheet" id="shDay">
   <div class="grab"></div>
   <h2 id="dTitle">—</h2>
-  <p class="lede">Tap a day on the calendar to cycle it. Use this for a different quantity.</p>
+  <p class="lede">Tap a day on the calendar to cycle it. Use this for a different quantity, or to say which milk came.</p>
   <div class="field">
     <label>Status</label>
     <div class="chips" id="dStates"></div>
+  </div>
+  <div class="field" id="dKindWrap">
+    <label>Which milk</label>
+    <div class="chips" id="dKinds"></div>
+    <p class="hint" id="dKindHint"></p>
   </div>
   <div class="field" id="dQtyWrap">
     <label for="dQty">Litres this day</label>
@@ -985,7 +1013,46 @@ function dayInfo(store, key){
   const fallback = (st.skipWeekly || []).includes(dow) ? "off" : (st.defaultState || "yes");
   const state = e && e.s ? e.s : fallback;
   const qtyMl = state === "yes" ? (e && e.q != null ? e.q : st.qtyMl) : 0;
-  return { state, qtyMl, custom: !!(e && e.q != null) };
+  return { state, qtyMl, custom: !!(e && e.q != null), kind: (e && e.k) || "" };
+}
+
+/* ---------------- kinds of milk ----------------
+
+   A book has one default price, and that is all most people need. A household
+   buying two sorts — toned for tea, full cream for the children — was writing
+   one of them down at the wrong price every day, because the book could only
+   hold a single number.
+
+   A kind is only ever named on the day it was delivered. A day with no kind is
+   the default, priced by the rate history exactly as before, so every book
+   written before this existed bills to the same paisa. */
+const kindsOf = store => (store.settings.kinds || []).filter(k => k && k.id);
+const liveKinds = store => kindsOf(store).filter(k => !k.off);
+const kindById = (store, id) => kindsOf(store).find(k => k.id === id) || null;
+const kindName = (store, id) => { const k = kindById(store, id); return k ? (k.name || "Unnamed") : ""; };
+
+/* Removing a kind hides it rather than deleting it. The days already recorded
+   against it must keep the price they were billed at, and a vendor who stops
+   selling something does not un-sell what he already delivered. */
+const MAX_KINDS = 24;
+
+/* Six colours that stay apart from the state colours and from each other. The
+   dot is a hint that this day was not the ordinary milk; the name is carried in
+   the day's accessible label, so nothing depends on telling them apart. */
+const KIND_COLOURS = ["#7c8cff", "#f6a5c0", "#4fd1c5", "#f0a44b", "#a78bfa", "#5eb1ef"];
+function kindColour(store, id){
+  const i = kindsOf(store).findIndex(k => k.id === id);
+  return KIND_COLOURS[(i < 0 ? 0 : i) % KIND_COLOURS.length];
+}
+
+/** How many days are recorded as this kind — asked before one is removed. */
+function daysUsingKind(store, id){
+  let n = 0;
+  for(const key of Object.keys(store.days || {})){
+    const e = store.days[key];
+    if(e && e.k === id && e.s === "yes") n++;
+  }
+  return n;
 }
 
 /* What a litre cost on a given day.
@@ -1005,6 +1072,17 @@ function rateFor(store, dayKey){
                        : (Number(rates[best].r) || 0);
 }
 
+/** What the milk actually delivered that day cost: its kind's price, or the default.
+
+    A kind this phone has not heard of yet falls back to the default rather than
+    billing at nothing, which is what a day looks like in the moment between one
+    phone adding a kind and another syncing it. */
+function rateForDay(store, dayKey, info){
+  const id = (info || dayInfo(store, dayKey)).kind;
+  const k = id ? kindById(store, id) : null;
+  return k ? (Number(k.rateMinor) || 0) : rateFor(store, dayKey);
+}
+
 function monthSummary(store, y, m, todayKey){
   const n = daysInMonth(y, m);
   const start = store.settings.startDate;
@@ -1012,6 +1090,9 @@ function monthSummary(store, y, m, todayKey){
   // Litres are gathered per rate so each block is still totalled and multiplied
   // once, the way a vendor writes a bill, even when a price rise lands mid-month.
   const byRate = new Map();
+  // And per kind as well, so a bill can say how much of each sort came rather
+  // than only what the month cost altogether.
+  const byKind = new Map();
   for(let d = 1; d <= n; d++){
     const key = keyOf(y, m, d);
     if(key > todayKey) continue;
@@ -1023,8 +1104,11 @@ function monthSummary(store, y, m, todayKey){
     const info = dayInfo(store, key);
     if(info.state === "yes"){
       delivered++; totalMl += info.qtyMl;
-      const r = rateFor(store, key);
+      const r = rateForDay(store, key, info);
       byRate.set(r, (byRate.get(r) || 0) + info.qtyMl);
+      const cur = byKind.get(info.kind) || { ml: 0, days: 0, rateMinor: r };
+      cur.ml += info.qtyMl; cur.days++; cur.rateMinor = r;
+      byKind.set(info.kind, cur);
     }
     else if(info.state === "skip") skipped++;
     else if(info.state === "away") away++;
@@ -1033,7 +1117,7 @@ function monthSummary(store, y, m, todayKey){
   }
   let amountMinor = 0;
   for(const [r, ml] of byRate) amountMinor += Math.round(ml * r / 1000);
-  return { totalMl, delivered, skipped, away, off, pending, amountMinor };
+  return { totalMl, delivered, skipped, away, off, pending, amountMinor, byKind };
 }
 
 /* What is pencilled in for days that have not happened yet.
@@ -1193,6 +1277,19 @@ function mergeSettings(a, b){
   }
   out.at = at;
   out.t = Math.max(mine.t || 0, theirs.t || 0);
+  /* Kinds are unioned by id, not taken whole from whichever phone saved last.
+     A list decided by one timestamp would drop a kind somebody added on another
+     phone the moment anyone changed any setting — and every day already
+     recorded against it would silently fall back to the default price. */
+  if("kinds" in mine || "kinds" in theirs){
+    const seen = new Map();
+    for(const k of [...(mine.kinds || []), ...(theirs.kinds || [])]){
+      if(!k || !k.id) continue;
+      const prev = seen.get(k.id);
+      if(!prev || (k.t || 0) >= (prev.t || 0)) seen.set(k.id, k);
+    }
+    out.kinds = [...seen.values()].slice(0, MAX_KINDS);
+  }
   return out;
 }
 
@@ -1317,6 +1414,14 @@ const fmtL = ml => (ml / 1000).toLocaleString(undefined, { maximumFractionDigits
 function billText(store, y, m, todayKey){
   const s = monthSummary(store, y, m, todayKey);
   const cur = store.settings.currency;
+  // With more than one kind of milk in the month, one rate line would be a lie:
+  // the vendor's own bill separates them, so this does too.
+  const kinds = [...(s.byKind || new Map()).entries()];
+  const split = kinds.length > 1
+    ? kinds.map(([id, k]) =>
+        `  ${(id ? kindName(store, id) : "Default") || "Unnamed"}: `
+        + `${fmtL(k.ml)} L at ${fmtMoney(k.rateMinor, cur)} = ${fmtMoney(Math.round(k.ml * k.rateMinor / 1000), cur)}`)
+    : [];
   const lines = [
     `Milk bill \u2014 ${MONTHS[m]} ${y}`,
     store.settings.vendor ? `Vendor: ${store.settings.vendor}` : null,
@@ -1327,7 +1432,7 @@ function billText(store, y, m, todayKey){
     s.pending ? `Not recorded: ${s.pending} days (not billed)` : null,
     ``,
     `Quantity:   ${fmtL(s.totalMl)} L`,
-    `Rate:       ${fmtMoney(store.settings.rateMinor, cur)} / L`,
+    ...(split.length ? [`By kind:`, ...split] : [`Rate:       ${fmtMoney(store.settings.rateMinor, cur)} / L`]),
     `Total:      ${fmtMoney(s.amountMinor, cur)}`,
   ].filter(x => x !== null);
   return lines.join("\n");
@@ -1335,7 +1440,7 @@ function billText(store, y, m, todayKey){
 
 /* ---------------- app state ---------------- */
 let store = loadStore();
-let viewY, viewM, editKey = null, editState = "yes";
+let viewY, viewM, editKey = null, editState = "yes", editKind = "";
 const today = () => ymd(new Date());
 
 /* ---------------- render ---------------- */
@@ -1604,9 +1709,12 @@ function render(){  const tk = today();
       + (shut ? " locked" : "") + (key === tk ? " today" : "");
     const mark = info.state === "yes" ? ICON_TICK : info.state === "skip" ? ICON_CROSS
       : info.state === "away" ? ICON_AWAY : info.state === "off" ? ICON_OFF : "";
-    btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` +
+    const kindDot = info.state === "yes" && info.kind
+      ? `<span class="k" style="background:${kindColour(store, info.kind)}"></span>` : "";
+    btn.innerHTML = `<span class="n">${d}</span><span class="m">${mark}</span>` + kindDot +
       (info.custom && info.state === "yes" ? `<span class="q">${fmtL(info.qtyMl)}L</span>` : "");
     btn.setAttribute("aria-label", `${d} ${MONTHS[viewM]} \u2014 ${STATE_WORDS[info.state] || info.state}`
+      + (info.state === "yes" && info.kind && kindName(store, info.kind) ? `, ${kindName(store, info.kind)}` : "")
       + (future ? " (planned)" : "")
       + (shut ? (lock.reason === "guard" ? " (protected)" : " (locked)") : "")
       + (pre ? " (before this book starts)" : ""));
@@ -1654,13 +1762,18 @@ function render(){  const tk = today();
 }
 
 const CYCLE = ["yes", "skip", "away"];
-function writeDay(key, state, qtyMl){
+function writeDay(key, state, qtyMl, kind){
   const e = { s: state, t: Date.now() };
   if(state === "yes" && qtyMl != null && qtyMl !== store.settings.qtyMl) e.q = qtyMl;
+  /* The kind is kept whatever the state, and only ever billed on a day that was
+     delivered. Dropping it the moment a day was marked skipped meant tapping
+     twice past it and back again quietly returned the day to the default price
+     — a mis-tap that changes what someone is charged and says nothing. */
+  if(kind) e.k = kind;
   store.days[key] = e;
 }
-function setDay(key, state, qtyMl){
-  writeDay(key, state, qtyMl);
+function setDay(key, state, qtyMl, kind){
+  writeDay(key, state, qtyMl, kind);
   saveStore(store);
   queueSync();
 }
@@ -1831,12 +1944,16 @@ function cycle(key){
   // "off" and "none" are not part of the round trip: a tap on one of them is
   // someone recording a delivery, not stepping to the next state.
   const state = (cur === "off" || cur === "none") ? "yes" : next;
-  const custom = dayInfo(store, key).custom ? dayInfo(store, key).qtyMl : null;
+  const was = dayInfo(store, key);
+  const custom = was.custom ? was.qtyMl : null;
+  // A tap is about whether it came, not what it was. Whatever kind the day was
+  // already recorded as stays put; changing it is what the long press is for.
+  const kind = was.kind;
   const d = parseYmd(key);
   const label = STATE_WORDS[state] || state;
   const wasLabel = STATE_WORDS[cur] || cur;
   logChange(`${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}: ${wasLabel} \u2192 ${label}`);
-  withUndo([key], () => writeDay(key, state, custom),
+  withUndo([key], () => writeDay(key, state, custom, kind),
     `${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)} \u2014 ${label}`);
 }
 
@@ -1986,8 +2103,85 @@ function toast(m, onUndo){
 }
 
 /* settings */
+
+/* The kinds being edited, held apart from the book until Save so that
+   backing out of the sheet changes nothing — the same as every other field. */
+let kindRows = [];
+const newKindId = () => "k" + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3);
+
+/* The two a household usually keeps apart, then the fat grades. A preset only
+   fills in the name: the price is always the one your own vendor charges, so it
+   starts at the book's default and is yours to change. */
+const KIND_PRESETS = ["Cow", "Buffalo", "Toned", "Full cream"];
+
+function renderKindRows(){
+  const w = $("fKinds"); w.innerHTML = "";
+  for(const k of kindRows){
+    if(k.off) continue;
+    const row = document.createElement("div");
+    row.className = "kindrow";
+    const name = document.createElement("input");
+    name.type = "text"; name.className = "kName"; name.maxLength = 40;
+    name.placeholder = "e.g. Cow"; name.value = k.name || "";
+    name.setAttribute("aria-label", "Name of this kind of milk");
+    name.addEventListener("input", () => { k.name = name.value.slice(0, 40); });
+    name.addEventListener("change", renderKindOffer);
+    const rate = document.createElement("input");
+    rate.type = "number"; rate.className = "kRate"; rate.step = "0.5"; rate.min = "0"; rate.max = "100000";
+    rate.inputMode = "decimal"; rate.value = (Number(k.rateMinor) || 0) / 100;
+    rate.setAttribute("aria-label", `Price per litre for ${k.name || "this kind"}`);
+    rate.addEventListener("input", () => { k.rateMinor = clampRate(parseFloat(rate.value || "0") * 100); });
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "kDel"; del.textContent = "\u2715";
+    del.setAttribute("aria-label", `Remove ${k.name || "this kind"}`);
+    del.addEventListener("click", () => removeKindRow(k));
+    row.appendChild(name); row.appendChild(rate); row.appendChild(del);
+    w.appendChild(row);
+  }
+  renderKindOffer();
+}
+
+/** The one-tap names, minus any already in the list. */
+function renderKindOffer(){
+  const w = $("fKindAdd"); w.innerHTML = "";
+  const taken = new Set(kindRows.filter(k => !k.off).map(k => (k.name || "").trim().toLowerCase()));
+  const offer = (label, name) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "chip add"; b.textContent = label;
+    b.addEventListener("click", () => addKind(name));
+    w.appendChild(b);
+  };
+  for(const p of KIND_PRESETS) if(!taken.has(p.toLowerCase())) offer("+ " + p, p);
+  offer("+ Something else", "");
+}
+
+function addKind(name){
+  if(kindRows.filter(k => !k.off).length >= MAX_KINDS) return toast("That is as many kinds as a book can hold.");
+  kindRows.push({ id: newKindId(), name, rateMinor: Number(store.settings.rateMinor) || 0, t: Date.now() });
+  renderKindRows();
+  // A preset already knows what it is called, so the price is what is missing.
+  const rows = $("fKinds").querySelectorAll(".kindrow");
+  const last = rows[rows.length - 1];
+  if(last){
+    const target = name ? last.querySelector(".kRate") : last.querySelector(".kName");
+    if(target && target.focus) target.focus();
+  }
+}
+
+function removeKindRow(k){
+  const used = daysUsingKind(store, k.id);
+  const known = kindsOf(store).some(x => x.id === k.id);
+  // A kind nobody has saved yet is just a row on screen; drop it outright.
+  if(!known){ kindRows = kindRows.filter(x => x !== k); renderKindRows(); return; }
+  k.off = true;
+  renderKindRows();
+  if(used) toast(`Removed from the list. The ${used} day${used === 1 ? "" : "s"} already marked as this keep their price.`);
+}
+
 function openSettings(){
   const st = store.settings;
+  kindRows = kindsOf(store).map(k => Object.assign({}, k));
+  renderKindRows();
   $("fVendor").value = st.vendor || "";
   $("fQty").value = st.qtyMl / 1000;
   $("fRate").value = st.rateMinor / 100;
@@ -2126,6 +2320,24 @@ $("saveSettings").addEventListener("click", () => {
     defaultState: DEFAULT_STATES.some(d => d[0] === $("fDefault").value) ? $("fDefault").value : "yes",
     skipWeekly: [...$("fOff").children].filter(c => c.classList.contains("on")).map(c => +c.dataset.d),
   };
+
+  /* Only a kind that actually changed gets a new timestamp, so a merge can tell
+     an edit from a copy being carried along. A blank row is somebody who
+     pressed Add and thought better of it, and is not saved at all. */
+  const before = new Map(kindsOf(store).map(k => [k.id, k]));
+  const kinds = kindRows
+    .filter(k => k.id && ((k.name || "").trim() || before.has(k.id)))
+    .map(k => {
+      const was = before.get(k.id);
+      const next = { id: k.id, name: (k.name || "").trim().slice(0, 40), rateMinor: Number(k.rateMinor) || 0 };
+      if(k.off) next.off = true;
+      const same = was && was.name === next.name && Number(was.rateMinor) === next.rateMinor
+        && !!was.off === !!next.off;
+      next.t = same ? (was.t || 0) : Date.now();
+      return next;
+    })
+    .slice(0, MAX_KINDS);
+  if(kinds.length || kindsOf(store).length) next.kinds = kinds;
 
   const was = store.settings;
   const rateChanged = Number(next.rateMinor) !== Number(was.rateMinor || 0);
@@ -2798,6 +3010,7 @@ function openDay(key){
   editKey = key;
   const info = dayInfo(store, key);
   editState = info.state === "off" ? "yes" : info.state;
+  editKind = info.kind;
   const d = parseYmd(key);
   $("dTitle").textContent = `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   const w = $("dStates"); w.innerHTML = "";
@@ -2805,28 +3018,85 @@ function openDay(key){
     const c = document.createElement("button");
     c.className = "chip" + (val === editState ? " on" : "");
     c.textContent = label;
+    c.dataset.v = val;
     c.addEventListener("click", () => {
       editState = val;
-      [...w.children].forEach(x => x.classList.toggle("on", x === c));
-      $("dQtyWrap").style.display = val === "yes" ? "" : "none";
+      markDayState();
+      showDayFields();
     });
     w.appendChild(c);
   }
+  markDayState = () => [...w.children].forEach(x => x.classList.toggle("on", x.dataset.v === editState));
+  renderDayKinds();
   $("dQty").value = (info.state === "yes" ? info.qtyMl : store.settings.qtyMl) / 1000;
-  $("dQtyWrap").style.display = editState === "yes" ? "" : "none";
+  showDayFields();
   sheet("shDay");
 }
+
+function showDayFields(){
+  const yes = editState === "yes";
+  $("dQtyWrap").style.display = yes ? "" : "none";
+  // Offered on a day that came, and on one nobody has recorded yet — picking a
+  // kind there is how you say it came. Not on a day marked skipped or away,
+  // where naming the milk would mean nothing. With no kinds set up there is no
+  // choice to make, so the row stays out of the way entirely.
+  const relevant = yes || editState === "none" || editState === "off";
+  const any = liveKinds(store).length > 0 || editKind;
+  $("dKindWrap").style.display = relevant && any ? "" : "none";
+}
+
+/* Set by openDay so the kind chips can move the status with them. */
+let markDayState = () => {};
+
+function renderDayKinds(){
+  const w = $("dKinds"); w.innerHTML = "";
+  const cur = store.settings.currency;
+  const options = [{ id: "", name: "Default", rateMinor: rateFor(store, editKey || today()) }];
+  for(const k of liveKinds(store)) options.push(k);
+  // A kind that has been retired still shows while a day is recorded as it,
+  // or the day would silently move to the default the moment you opened it.
+  if(editKind && !options.some(o => o.id === editKind)){
+    const gone = kindById(store, editKind);
+    if(gone) options.push(gone);
+  }
+  for(const k of options){
+    const c = document.createElement("button");
+    c.className = "chip" + (k.id === editKind ? " on" : "");
+    c.textContent = k.name || "Unnamed";
+    c.addEventListener("click", () => {
+      editKind = k.id;
+      // Naming the milk is saying it came. Without this, choosing a kind on a
+      // day nobody had recorded left it unrecorded and threw the kind away on
+      // save, which looked exactly like the choice not registering.
+      if(editState !== "yes"){ editState = "yes"; markDayState(); showDayFields(); }
+      [...w.children].forEach(x => x.classList.toggle("on", x === c));
+      setDayKindHint();
+    });
+    w.appendChild(c);
+  }
+  setDayKindHint();
+
+  function setDayKindHint(){
+    const k = editKind ? kindById(store, editKind) : null;
+    const rate = k ? (Number(k.rateMinor) || 0) : rateFor(store, editKey || today());
+    $("dKindHint").textContent = `Billed at ${fmtMoney(rate, cur)} a litre.`
+      + (k && k.off ? " This one has been removed from the list." : "");
+  }
+}
+
 $("dSave").addEventListener("click", () => {
   const blocked = editBlocked(editKey);
   if(blocked === BEFORE_START){ sheet(null); return offerToReachBack(editKey); }
   if(blocked){ sheet(null); return toast(blocked); }
   const q = clampQty(parseFloat($("dQty").value || "0") * 1000);
   const state = editState;
+  const kind = editKind;
   const d = parseYmd(editKey);
   logChange(`${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}: set to ${STATE_WORDS[state] || state}`
-    + (state === "yes" ? ` at ${fmtL(q)} L` : ""));
+    + (state === "yes" ? ` at ${fmtL(q)} L` : "")
+    + (state === "yes" && kind ? ` (${kindName(store, kind)})` : ""));
   sheet(null);
-  withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null), "Updated");
+  withUndo([editKey], () => writeDay(editKey, state, state === "yes" ? q : null, kind), "Updated");
 });
 
 /* away range */
