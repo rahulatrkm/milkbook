@@ -1434,6 +1434,20 @@ function mergeStores(a, b){
     if(item && item.i && !seen.has(item.i)) seen.set(item.i, item);
   }
   out.log = [...seen.values()].sort((x, y) => (y.t || 0) - (x.t || 0)).slice(0, LOG_MAX);
+
+  /* Who is on this book travels with it. Held only on the mirror, the group was
+     lost every time that mirror restarted, and every phone in the household
+     turned into a stranger asking to be let in. Carried in the book it reaches
+     the other phones through any route the book takes — a backup file, Drive, a
+     local copy handed over with no internet at all. */
+  out.roster = {};
+  const aRoster = a.roster || {}, bRoster = b.roster || {};
+  for(const k of new Set([...Object.keys(aRoster), ...Object.keys(bRoster)])){
+    const x = aRoster[k], y = bRoster[k];
+    if(!x){ out.roster[k] = y; continue; }
+    if(!y){ out.roster[k] = x; continue; }
+    out.roster[k] = (y.t || 0) > (x.t || 0) ? y : x;
+  }
   return out;
 }
 
@@ -3701,24 +3715,30 @@ async function doSync(quiet){
   const ctl = new AbortController();
   const bell = setTimeout(() => ctl.abort(), 15000);
   try{
+    /* `restore` is the household's own copy of the group, offered back. The
+       mirror's store is a file in a container with no disk under it, so a
+       deploy or an idle spin-down loses every roster it holds; it only looks at
+       this when it has none of its own. */
     const res = await fetch(`${API}/api/store/${encodeURIComponent(store.sync)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: store.settings, days: store.days,
                              locks: store.locks || {}, payments: store.payments || {},
                              rates: store.rates || {}, log: store.log || [],
-                             device, approve: pendingApprovals, revoke: pendingRemovals }),
+                             device, approve: pendingApprovals, revoke: pendingRemovals,
+                             restore: { roster: store.roster || {} } }),
       signal: ctl.signal,
     });
     if(!res.ok) throw new Error("http " + res.status);
     const remote = await res.json();
     pendingApprovals = []; pendingRemovals = [];
     syncStanding = remote.you || null;
-    syncRoster = remote.roster || null;
     const merged = mergeStores(store, remote);
     store.settings = merged.settings; store.days = merged.days;
     store.locks = merged.locks; store.payments = merged.payments;
     store.rates = merged.rates; store.log = merged.log;
+    store.roster = merged.roster;
+    syncRoster = Object.keys(store.roster).length ? store.roster : null;
     saveStore(store); render();
     if(openSheet === "shPay") renderPayments();   // the sheet in front of you is not exempt
     if(openSheet === "shSync") renderSync();
@@ -3729,7 +3749,9 @@ async function doSync(quiet){
         ? "This phone is not recognised \u2014 ask the family to remove it and join again"
         : "Waiting for someone on this book to let this phone in");
     }
-    else if(!quiet) toast("Synced");
+    else if(!quiet) toast(syncStanding && syncStanding.why === "restored"
+      ? "Synced \u2014 the mirror had forgotten the group, so this phone put it back"
+      : "Synced");
   }catch(e){
     if(!quiet) toast("Sync unavailable \u2014 your data is safe on this device");
   }finally{
