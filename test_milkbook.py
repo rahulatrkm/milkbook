@@ -877,5 +877,111 @@ ok("two phones each adding a vendor keep both",
    sorted(v["id"] for v in M.merge(_va, _vb)["settings"]["vendors"]) == ["gopal", "suresh"],
    json.dumps(M.merge(_va, _vb)["settings"]["vendors"]))
 
+print("\nWHEN TWO PHONES DISAGREE, THE LATER EDIT WINS")
+# One rule, everywhere in the book, so there is never a question of which part
+# resolves conflicts which way.
+_old = {"settings": {"t": 1, "at": {"vendor": 1}, "vendor": "Old"},
+        "days": {"2026-05-01": {"s": "yes", "t": 100}},
+        "locks": {"2026-05": {"on": True, "t": 100}},
+        "payments": {"p1": {"on": "2026-05-01", "a": 100, "t": 100, "del": False}},
+        "rates": {"2026-05-01": {"r": 5000, "t": 100}}}
+_new = {"settings": {"t": 2, "at": {"vendor": 2}, "vendor": "New"},
+        "days": {"2026-05-01": {"s": "skip", "t": 200}},
+        "locks": {"2026-05": {"on": False, "t": 200}},
+        "payments": {"p1": {"on": "2026-05-01", "a": 250, "t": 200, "del": False}},
+        "rates": {"2026-05-01": {"r": 6000, "t": 200}}}
+_a, _b = M.sanitise(_old), M.sanitise(_new)
+for _name, _merged in (("older first", M.merge(_a, _b)), ("newer first", M.merge(_b, _a))):
+    ok(f"a day takes the later edit ({_name})", _merged["days"]["2026-05-01"]["s"] == "skip",
+       json.dumps(_merged["days"]["2026-05-01"]))
+    ok(f"a lock does too ({_name})", _merged["locks"]["2026-05"]["on"] is False)
+    ok(f"a payment does too ({_name})", _merged["payments"]["p1"]["a"] == 250)
+    ok(f"a rate does too ({_name})", _merged["rates"]["2026-05-01"]["r"] == 6000)
+    ok(f"and a setting does too ({_name})", _merged["settings"]["vendor"] == "New")
+
+# The log is the exception, and deliberately: it only ever gains entries, so
+# nothing in it is ever overwritten by anything else.
+_la = M.sanitise({"settings": {}, "log": [{"i": "aaaaaaaa", "t": 100, "m": "one"}]})
+_lb = M.sanitise({"settings": {}, "log": [{"i": "bbbbbbbb", "t": 200, "m": "two"}]})
+ok("the change log keeps both sides rather than choosing",
+   len(M.merge(_la, _lb)["log"]) == 2, json.dumps([e["m"] for e in M.merge(_la, _lb)["log"]]))
+
+print("\nA PHONE WITH A WRONG CLOCK CANNOT WIN EVERY ARGUMENT")
+# "Newest wins" is only as good as the clock behind it. A phone days fast would
+# beat every later correction anyone else made, and hand back its own stale copy
+# over the top of them.
+_far = int(time.time() * 1000) + 30 * 24 * 3600 * 1000
+_skewed = M.sanitise({"settings": {"t": 1},
+                      "days": {"2026-05-01": {"s": "yes", "t": _far}},
+                      "payments": {"p1": {"on": "2026-05-01", "a": 100, "t": _far, "del": False}},
+                      "rates": {"2026-05-01": {"r": 5000, "t": _far}},
+                      "log": [{"i": "cccccccc", "t": _far, "m": "from the future"}]})
+_now = int(time.time() * 1000)
+ok("a day stamped a month ahead is pulled back to now",
+   _skewed["days"]["2026-05-01"]["t"] <= _now + 1000, str(_skewed["days"]["2026-05-01"]["t"] - _now))
+ok("so is a payment", _skewed["payments"]["p1"]["t"] <= _now + 1000)
+ok("so is a rate change", _skewed["rates"]["2026-05-01"]["t"] <= _now + 1000)
+ok("so is a log entry", _skewed["log"][0]["t"] <= _now + 1000)
+
+_slight = _now + 60 * 1000
+ok("a clock a minute out is left alone, because that is ordinary",
+   M.sanitise({"days": {"2026-05-01": {"s": "yes", "t": _slight}}})["days"]["2026-05-01"]["t"] == _slight)
+ok("an edit made in the past is never moved",
+   M.sanitise({"days": {"2026-05-01": {"s": "yes", "t": 100}}})["days"]["2026-05-01"]["t"] == 100,
+   "a phone that was offline for a week must keep its own times")
+ok("a nonsense timestamp becomes nothing rather than throwing",
+   M.sanitise({"days": {"2026-05-01": {"s": "yes", "t": "soon"}}})["days"]["2026-05-01"]["t"] == 0)
+ok("and so does a negative one",
+   M.sanitise({"days": {"2026-05-01": {"s": "yes", "t": -5}}})["days"]["2026-05-01"]["t"] == 0)
+
+print("\nTHE GROUP SURVIVES THE MIRROR FORGETTING IT")
+# The store is a file in a container with no disk under it, so a deploy or an
+# idle spin-down loses every roster. What happened next is the bug: the first
+# phone to sync founded a new group containing only itself, and every other
+# phone in the house became a stranger asking to be let in.
+_KEY_A, _KEY_B = "a" * 40, "b" * 40
+_dev_a = {"id": "phoneaaaaaaaaaaaaaaa", "key": _KEY_A, "name": "Mum's phone"}
+_dev_b = {"id": "phonebbbbbbbbbbbbbbb", "key": _KEY_B, "name": "Dad's phone"}
+
+_book, _ok, _why = M.enrol({}, _dev_a)
+ok("the first phone founds the group", _ok and _why == "founder")
+_book, _ok, _why = M.enrol(_book, _dev_b)
+ok("the second arrives waiting", not _ok and _why == "pending")
+_book = M.apply_roster_changes(_book, _dev_a["id"], [_dev_b["id"]], [])
+ok("and is let in by the first", _book["roster"][_dev_b["id"]]["ok"] is True)
+
+# What a phone remembers is the public roster: names and standing, never keys.
+_remembered = M.public_roster(_book)
+ok("what a phone remembers carries no secrets",
+   all("h" not in v for v in _remembered.values()), json.dumps(_remembered))
+
+_wiped: dict = {}
+_back = M.adopt_roster(_remembered, _dev_b["id"])
+ok("a phone that was in the group can put it back", set(_back) == {_dev_a["id"], _dev_b["id"]},
+   json.dumps(sorted(_back)))
+ok("and everybody keeps the standing they had", _back[_dev_a["id"]]["ok"] and _back[_dev_b["id"]]["ok"])
+ok("the restored entries carry no key, because none was ever handed out",
+   all(not v.get("h") for v in _back.values()))
+
+_wiped["roster"] = _back
+_wiped, _ok, _why = M.enrol(_wiped, _dev_b)
+ok("that phone is straight back in, not waiting", _ok and _why == "in")
+ok("and its key binds on the way", _wiped["roster"][_dev_b["id"]]["h"] == M._hash_key(_KEY_B))
+_wiped, _ok, _why = M.enrol(_wiped, _dev_a)
+ok("and so is the other one, without anybody approving anything again", _ok and _why == "in")
+ok("once bound, the wrong key is still refused",
+   M.enrol(_wiped, {"id": _dev_a["id"], "key": "z" * 40, "name": "Impostor"})[2] == "wrong-key")
+
+ok("a phone that was not in the group cannot put one back",
+   M.adopt_roster(_remembered, "strangerrrrrrrrrrrrr") == {})
+ok("nor can one that was only ever waiting",
+   M.adopt_roster({_dev_b["id"]: {"n": "x", "ok": False, "t": 1}}, _dev_b["id"]) == {})
+ok("a roster with nobody approved in it is not adopted",
+   M.adopt_roster({_dev_a["id"]: {"n": "x", "ok": False, "t": 1}}, _dev_a["id"]) == {})
+ok("junk is not adopted", M.adopt_roster("roster", _dev_a["id"]) == {}
+   and M.adopt_roster(None, _dev_a["id"]) == {})
+ok("a bad device id in a restored roster is dropped",
+   "../x" not in M.adopt_roster({**_remembered, "../x": {"n": "x", "ok": True, "t": 1}}, _dev_b["id"]))
+
 print(f"\n{PASS} passed, {FAIL} failed\n")
 sys.exit(1 if FAIL else 0)

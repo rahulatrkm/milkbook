@@ -167,7 +167,7 @@ KNOWN_TOP = {"settings", "days", "locks", "payments", "rates", "roster", "log"}
 # Envelope, not book. These carry the caller's own credential, so letting the
 # unknown-field rule sweep them up would store a device secret in the book and
 # hand it back to anyone holding the code — which is everything this guards.
-ENVELOPE = {"device", "approve", "revoke"}
+ENVELOPE = {"device", "approve", "revoke", "restore"}
 NEVER_STORE = KNOWN_TOP | ENVELOPE
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 DEVICE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
@@ -178,6 +178,25 @@ MAX_VENDORS = 12
 # More than a few deliveries on one date is a different app. The ceiling is here
 # so a bad merge cannot grow a day without end.
 MAX_EXTRA = 6
+# How far ahead of this mirror a phone's clock may be and still be believed.
+# Everything merges by "newest wins", so a phone whose clock is days fast would
+# win every disagreement for as long as it stayed wrong — including handing back
+# its own stale copy over somebody else's later correction. Small differences
+# are ordinary and kept; a wild one is pulled back to now, which is the latest
+# the edit can honestly be.
+SKEW_GRACE_MS = 5 * 60 * 1000
+
+
+def _stamp(value) -> int:
+    """A timestamp from a phone, never further ahead than this mirror's clock."""
+    try:
+        when = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    if when < 0:
+        return 0
+    now = int(time.time() * 1000)
+    return now if when > now + SKEW_GRACE_MS else when
 
 
 def _clean_vendors(raw) -> list:
@@ -262,7 +281,6 @@ def sanitise(book: dict) -> dict:
     """Accept only what we understand. Anything else is dropped rather than stored."""
     if not isinstance(book, dict):
         raise ValueError("body must be an object")
-
     raw_settings = book.get("settings")
     settings: dict = {}
     if isinstance(raw_settings, dict):
@@ -316,7 +334,7 @@ def sanitise(book: dict) -> dict:
             state = entry.get("s")
             if state not in STATES:
                 continue
-            clean = {"s": state, "t": int(entry.get("t") or 0)}
+            clean = {"s": state, "t": _stamp(entry.get("t"))}
             qty = entry.get("q")
             if isinstance(qty, (int, float)):
                 clean["q"] = max(0, min(int(qty), 100_000))
@@ -360,7 +378,7 @@ def sanitise(book: dict) -> dict:
             # handing protection back into an unlock on the next merge.
             on = entry.get("on")
             locks[key] = {"on": None if on is None else bool(on),
-                          "t": int(entry.get("t") or 0)}
+                          "t": _stamp(entry.get("t"))}
 
     # Money handed over, kept as its own ledger rather than folded into a day.
     # A payment is not a delivery: it has its own date, and two of them on the
@@ -382,7 +400,7 @@ def sanitise(book: dict) -> dict:
                 "on": on,
                 "a": max(0, min(int(entry.get("a") or 0), 1_000_000_000)),
                 "note": str(entry.get("note") or "")[:60],
-                "t": int(entry.get("t") or 0),
+                "t": _stamp(entry.get("t")),
                 "del": bool(entry.get("del")),
             }
             # Who the money went to. Absent means the book's original vendor,
@@ -403,7 +421,7 @@ def sanitise(book: dict) -> dict:
                 continue
             rates[key] = {
                 "r": max(0, min(int(entry.get("r") or 0), 10_000_000)),
-                "t": int(entry.get("t") or 0),
+                "t": _stamp(entry.get("t")),
             }
 
     raw_log = book.get("log")
@@ -417,7 +435,7 @@ def sanitise(book: dict) -> dict:
                 continue
             log.append({
                 "i": entry_id,
-                "t": int(item.get("t") or 0),
+                "t": _stamp(item.get("t")),
                 "d": str(item.get("d") or "")[:64],
                 "n": str(item.get("n") or "")[:40],
                 "m": str(item.get("m") or "")[:120],
@@ -472,13 +490,49 @@ def enrol(book: dict, device: dict) -> tuple[dict, bool, str]:
                              "t": int(time.time() * 1000), "by": None}
         return book, False, "pending"
 
+    stored_digest = str(entry.get("h") or "")
+    if not stored_digest:
+        # An entry put back from a phone's memory after this mirror lost its
+        # roster. The secret was never in what a phone is allowed to see, so
+        # there is nothing to compare against and it binds now.
+        entry["h"] = digest
     # An id that is already taken has to prove it owns the secret, or anyone
     # could name an approved device and inherit its permission.
-    if not hmac.compare_digest(str(entry.get("h") or ""), digest):
+    elif not hmac.compare_digest(stored_digest, digest):
         return book, False, "wrong-key"
     entry["n"] = name
     entry["t"] = int(time.time() * 1000)
     return book, bool(entry.get("ok")), "in" if entry.get("ok") else "pending"
+
+
+def adopt_roster(raw, device_id: str) -> dict:
+    """A group a phone remembered, taken back after the mirror lost its own.
+
+    The store is a file in a container with no disk under it, so a deploy or an
+    idle spin-down loses every book and every roster. What happened next was the
+    thing being fixed: the first phone to sync afterwards founded a brand new
+    group containing only itself, and every other phone in the household turned
+    into a stranger asking to be let in.
+
+    Only a phone that was itself in the group, and approved, may put it back —
+    which is no more trust than was already given to whoever synced first.
+    Keys are not restored, because a phone has never been allowed to see them;
+    each device binds its own again on its next visit.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    mine = raw.get(device_id)
+    if not isinstance(mine, dict) or not mine.get("ok"):
+        return {}
+    out: dict = {}
+    for did, entry in list(raw.items())[:MAX_DEVICES]:
+        if not isinstance(did, str) or not DEVICE_ID_RE.match(did) or not isinstance(entry, dict):
+            continue
+        out[did] = {"n": str(entry.get("n") or "A phone")[:40],
+                    "ok": bool(entry.get("ok")),
+                    "t": int(entry.get("t") or 0) if isinstance(entry.get("t"), (int, float)) else 0,
+                    "by": None}
+    return out if any(v["ok"] for v in out.values()) else {}
 
 
 def apply_roster_changes(book: dict, actor: str, approve, revoke) -> dict:
@@ -974,9 +1028,23 @@ def app(environ, start_response):
                     merged = merge(stored, incoming)
                     return merged, _seen(merged)
 
-                stored, may_write, why = enrol(stored, device)
                 device_id = str(device.get("id") or "")
-                standing = {"ok": may_write, "why": why, "id": device_id,
+                # Before anyone is enrolled: if this mirror holds no roster at
+                # all and the phone remembers one it was part of, take it back.
+                # There is no disk under the store, so this is the ordinary case
+                # after a deploy rather than a rare one.
+                revived = ""
+                if not stored.get("roster"):
+                    back = adopt_roster(
+                        (raw.get("restore") or {}).get("roster")
+                        if isinstance(raw.get("restore"), dict) else None,
+                        device_id)
+                    if back:
+                        stored["roster"] = back
+                        revived = "restored"
+
+                stored, may_write, why = enrol(stored, device)
+                standing = {"ok": may_write, "why": revived or why, "id": device_id,
                             "label": device_label(device_id)}
 
                 if not may_write:
