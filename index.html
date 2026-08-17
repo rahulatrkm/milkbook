@@ -3077,9 +3077,8 @@ async function loadBackupFile(){
    book reaches somewhere that outlives the device on any platform.
 
    Only drive.file is asked for: per-file access to the one file this app
-   creates, not a reading of anybody's Drive. The token lives in memory for the
-   hour it is good for and is never written down. Google's script is fetched
-   only once somebody switches this on, so a page that is not using Drive still
+   creates, not a reading of anybody's Drive. Google's script is fetched only
+   once somebody switches this on, so a page that is not using Drive still
    makes no request to Google. */
 const GOOGLE_CLIENT_ID = "442936726777-s2gfev948epv54sjnnn3idlhlk9ndobk.apps.googleusercontent.com";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
@@ -3088,13 +3087,58 @@ const DRIVE_ON_KEY = "milkbook_drive_on_v1";
 const DRIVE_ID_KEY = "milkbook_drive_id_v1";
 const DRIVE_WHO_KEY = "milkbook_drive_who_v1";
 const DRIVE_QUIET_KEY = "milkbook_drive_quiet_v1";
+const DRIVE_TOKEN_KEY = "milkbook_drive_token_v1";
 const CAN_USE_DRIVE = !!GOOGLE_CLIENT_ID;
 
-let driveToken = null, driveTokenAt = 0, driveClient = null, driveBusy = false, driveTriedSilently = false;
+let driveClient = null, driveBusy = false, driveTriedSilently = false;
 
 const driveOn = () => { try{ return localStorage.getItem(DRIVE_ON_KEY) === "1"; }catch(e){ return false; } };
 const driveFileId = () => { try{ return localStorage.getItem(DRIVE_ID_KEY) || ""; }catch(e){ return ""; } };
 const driveWho = () => { try{ return localStorage.getItem(DRIVE_WHO_KEY) || ""; }catch(e){ return ""; } };
+
+/* The token is kept where the book is kept, and it outlives the tab.
+
+   A browser can never be given a refresh token, so a token thrown away when the
+   app closes means the next open has nothing and must go back to Google — and
+   where the browser refuses to carry a Google cookie into a frame, which is
+   every iPhone and every blocked-third-party-cookie desktop, going back to
+   Google silently cannot work either. That is the whole of "it asks me to sign
+   in every single time": not a lost account, a lost hour-long token.
+
+   Keeping it is worth the usual objection here. This token opens exactly one
+   file: the copy of this book that this app itself made. Anything able to read
+   it out of this storage is already reading the book out of the same storage,
+   so it hands over nothing that was not already in the same hands. It carries
+   the account it belongs to and the moment it dies, and it is dropped on
+   disconnect, on a switch of account, and the moment Google says it is stale. */
+const DRIVE_TOKEN_LIFE = 3600 * 1000;
+// Counted dead early, so a sync that starts with it has time to finish.
+const DRIVE_TOKEN_EARLY = 5 * 60 * 1000;
+let driveToken = null, driveTokenDies = 0;
+
+function rememberToken(token, lifeSeconds){
+  const life = Number(lifeSeconds) > 0 ? Number(lifeSeconds) * 1000 : DRIVE_TOKEN_LIFE;
+  driveToken = token || null;
+  driveTokenDies = token ? Date.now() + life - DRIVE_TOKEN_EARLY : 0;
+  try{
+    if(token) localStorage.setItem(DRIVE_TOKEN_KEY,
+      JSON.stringify({ t: token, dies: driveTokenDies, who: driveWho() }));
+    else localStorage.removeItem(DRIVE_TOKEN_KEY);
+  }catch(e){}
+}
+const forgetToken = () => rememberToken(null, 0);
+const driveHasToken = () => !!driveToken && Date.now() < driveTokenDies;
+
+(function loadToken(){
+  if(!driveOn()) return;
+  try{
+    const kept = JSON.parse(localStorage.getItem(DRIVE_TOKEN_KEY) || "null");
+    if(!kept || !kept.t || !(kept.dies > Date.now())) return;
+    // A token issued for one account is worth nothing in another.
+    if(kept.who && driveWho() && kept.who !== driveWho()) return;
+    driveToken = String(kept.t); driveTokenDies = kept.dies;
+  }catch(e){}
+})();
 
 /* Every one of these means the same thing underneath: the book on this phone is
    whole, and Drive is behind. Saying which is which is the difference between
@@ -3131,41 +3175,52 @@ function loadGoogle(){
     one account already signed in, an ordinary prompt reuses it without asking,
     which is why there appeared to be no way to change accounts at all. */
 async function driveAuth(mayAsk, chooseAccount){
-  if(driveToken && !chooseAccount && Date.now() - driveTokenAt < 50 * 60 * 1000) return driveToken;
+  if(driveHasToken() && !chooseAccount) return driveToken;
   if(!mayAsk) driveTriedSilently = true;
   await loadGoogle();
   return new Promise((res, rej) => {
-    const settle = e => {
+    const settle = () => {
       /* A silent request that cannot be answered is not a temporary blip: the
          Google session has lapsed, or the browser will not carry its cookie
          into a frame, and both stay true until somebody does something about
          it. Trying again on the next open, and the one after that, is what had
          this app asking to sign in over and over. */
       if(!mayAsk) try{ localStorage.setItem(DRIVE_QUIET_KEY, String(Date.now() + DRIVE_QUIET_MS)); }catch(e2){}
-      rej(e || new Error("auth"));
+      rej(new Error("auth"));
     };
     driveClient = google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: DRIVE_SCOPE,
       callback: r => {
-        if(!r || !r.access_token) return settle(new Error("no token"));
-        driveToken = r.access_token; driveTokenAt = Date.now();
-        if(mayAsk){
-          // A tap that worked earns the automatic path back.
-          driveTriedSilently = false;
-          try{ localStorage.removeItem(DRIVE_QUIET_KEY); }catch(e2){}
-        }
+        if(!r || !r.access_token) return settle();
+        rememberToken(r.access_token, r.expires_in);
+        /* Whichever way it worked, a tap or a quiet renewal, the automatic path
+           is earned back. Counting a silent success as a strike was why one
+           renewal early on left the rest of the visit signed out. */
+        driveTriedSilently = false;
+        try{ localStorage.removeItem(DRIVE_QUIET_KEY); }catch(e2){}
         res(driveToken);
       },
       error_callback: settle,
     });
-    driveClient.requestAccessToken({ prompt: chooseAccount ? "select_account" : mayAsk ? "" : "none" });
+    driveClient.requestAccessToken({ prompt: chooseAccount ? "select_account" : mayAsk ? "" : "none",
+      // Naming the account it already knows is what lets a silent renewal land.
+      hint: chooseAccount ? "" : driveWho() });
   });
 }
 
-const driveCall = (url, opts) => driveAuth(false).then(token => fetch(url, Object.assign({}, opts, {
-  headers: Object.assign({ Authorization: "Bearer " + token }, (opts || {}).headers || {}),
-})));
+async function driveCall(url, opts){
+  const send = token => fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({ Authorization: "Bearer " + token }, (opts || {}).headers || {}),
+  }));
+  const r = await send(await driveAuth(false));
+  /* A kept token can be taken back from Google's own security page, or simply
+     be older than this phone thinks. Google says so with a 401, and renewing
+     once is the difference between that and the app announcing Drive is broken. */
+  if(r.status !== 401) return r;
+  forgetToken();
+  return send(await driveAuth(false));
+}
 
 /** The file this app made before, if this phone has forgotten its id. */
 async function findDriveFile(){
@@ -3313,7 +3368,10 @@ async function driveSync(mayAsk, chooseAccount){
       const read = await driveRead();
       if(read){ theirs = read.book; remoteMark = bookMark(theirs); }
     }catch(e){
-      driveState = String(e && e.message) === "unreadable" ? "unreadable" : "error";
+      const why = String(e && e.message);
+      // The token can be refused mid-sync, and that is being signed out, not a
+      // fault in Drive: what it needs is a tap, not a report that it broke.
+      driveState = why === "unreadable" ? "unreadable" : why === "auth" ? "signed-out" : "error";
       throw e;
     }
     if(theirs){
@@ -3360,7 +3418,6 @@ async function driveSync(mayAsk, chooseAccount){
 const DRIVE_MIN_GAP = 15000;
 const DRIVE_QUIET_MS = 6 * 60 * 60 * 1000;
 const driveQuietUntil = () => { try{ return Number(localStorage.getItem(DRIVE_QUIET_KEY)) || 0; }catch(e){ return 0; } };
-const driveHasToken = () => !!driveToken && Date.now() - driveTokenAt < 50 * 60 * 1000;
 /* Syncing with a token in hand costs no window at all; every window this app
    has ever shown came from going to fetch one. So the automatic path may spend
    a token it already holds as often as it likes, and may only go and ask for
@@ -3422,8 +3479,11 @@ async function connectDrive(){
     toast(driveWho() ? `This book now syncs through the Drive of ${driveWho()}`
                      : `Saved to your Drive as ${DRIVE_NAME}`);
   }catch(e){
-    if(String(e && e.message) === "declined") return toast("Drive was left alone");
-    toast(e && e.message && e.message.length < 90 ? e.message : "Google Drive could not be connected");
+    const why = String(e && e.message);
+    if(why === "declined") return toast("Drive was left alone");
+    // "auth" and "no token" are notes to this code, not sentences to read.
+    if(why === "auth" || why === "no token") return toast("Google did not finish signing this phone in");
+    toast(why && why.length < 90 ? why : "Google Drive could not be connected");
   }
 }
 
@@ -3433,7 +3493,7 @@ async function connectDrive(){
    and then deciding there was nothing new to upload. */
 async function switchDriveAccount(){
   const was = driveWho();
-  driveToken = null; driveTokenAt = 0;
+  forgetToken();
   for(const key of [DRIVE_ID_KEY, DRIVE_WHO_KEY, MARK_KEY("drive")]){
     try{ localStorage.removeItem(key); }catch(e){}
   }
@@ -3453,9 +3513,10 @@ async function switchDriveAccount(){
 
 function disconnectDrive(){
   try{
-    for(const key of [DRIVE_ON_KEY, DRIVE_ID_KEY, DRIVE_WHO_KEY, DRIVE_QUIET_KEY, MARK_KEY("drive")]) localStorage.removeItem(key);
+    for(const key of [DRIVE_ON_KEY, DRIVE_ID_KEY, DRIVE_WHO_KEY, DRIVE_QUIET_KEY, DRIVE_TOKEN_KEY, MARK_KEY("drive")]) localStorage.removeItem(key);
   }catch(e){}
-  driveToken = null; driveTokenAt = 0; driveState = ""; driveTriedSilently = false;
+  forgetToken();
+  driveState = ""; driveTriedSilently = false;
   renderBackupNote();
   toast("Drive will not be written to again. The file already there is left alone.");
 }
